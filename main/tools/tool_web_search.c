@@ -96,13 +96,7 @@ static size_t url_encode(const char *src, char *dst, size_t dst_size)
 
 static void format_results(cJSON *root, char *output, size_t output_size)
 {
-    cJSON *web = cJSON_GetObjectItem(root, "web");
-    if (!web) {
-        snprintf(output, output_size, "No web results found.");
-        return;
-    }
-
-    cJSON *results = cJSON_GetObjectItem(web, "results");
+    cJSON *results = cJSON_GetObjectItem(root, "results");
     if (!results || !cJSON_IsArray(results) || cJSON_GetArraySize(results) == 0) {
         snprintf(output, output_size, "No web results found.");
         return;
@@ -116,7 +110,7 @@ static void format_results(cJSON *root, char *output, size_t output_size)
 
         cJSON *title = cJSON_GetObjectItem(item, "title");
         cJSON *url = cJSON_GetObjectItem(item, "url");
-        cJSON *desc = cJSON_GetObjectItem(item, "description");
+        cJSON *desc = cJSON_GetObjectItem(item, "content");
 
         off += snprintf(output + off, output_size - off,
             "%d. %s\n   %s\n   %s\n\n",
@@ -140,14 +134,12 @@ static esp_err_t search_direct(const char *url, search_buf_t *sb)
         .user_data = sb,
         .timeout_ms = 15000,
         .buffer_size = 4096,
-        .crt_bundle_attach = esp_crt_bundle_attach,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) return ESP_FAIL;
 
     esp_http_client_set_header(client, "Accept", "application/json");
-    esp_http_client_set_header(client, "X-Subscription-Token", s_search_key);
 
     esp_err_t err = esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);
@@ -165,17 +157,16 @@ static esp_err_t search_direct(const char *url, search_buf_t *sb)
 
 static esp_err_t search_via_proxy(const char *path, search_buf_t *sb)
 {
-    proxy_conn_t *conn = proxy_conn_open("api.search.brave.com", 443, 15000);
+    proxy_conn_t *conn = proxy_conn_open("192.168.1.175", 8888, 15000);
     if (!conn) return ESP_ERR_HTTP_CONNECT;
 
     char header[512];
     int hlen = snprintf(header, sizeof(header),
         "GET %s HTTP/1.1\r\n"
-        "Host: api.search.brave.com\r\n"
+        "Host: 192.168.1.175:8888\r\n"
         "Accept: application/json\r\n"
-        "X-Subscription-Token: %s\r\n"
         "Connection: close\r\n\r\n",
-        path, s_search_key);
+        path);
 
     if (proxy_conn_write(conn, header, hlen) < 0) {
         proxy_conn_close(conn);
@@ -226,11 +217,6 @@ static esp_err_t search_via_proxy(const char *path, search_buf_t *sb)
 
 esp_err_t tool_web_search_execute(const char *input_json, char *output, size_t output_size)
 {
-    if (s_search_key[0] == '\0') {
-        snprintf(output, output_size, "Error: No search API key configured. Set MIMI_SECRET_SEARCH_KEY in mimi_secrets.h");
-        return ESP_ERR_INVALID_STATE;
-    }
-
     /* Parse input to get query */
     cJSON *input = cJSON_Parse(input_json);
     if (!input) {
@@ -254,7 +240,7 @@ esp_err_t tool_web_search_execute(const char *input_json, char *output, size_t o
 
     char path[384];
     snprintf(path, sizeof(path),
-             "/res/v1/web/search?q=%s&count=%d", encoded_query, SEARCH_RESULT_COUNT);
+             "/search?q=%s&format=json", encoded_query);
 
     /* Allocate response buffer from PSRAM */
     search_buf_t sb = {0};
@@ -271,7 +257,7 @@ esp_err_t tool_web_search_execute(const char *input_json, char *output, size_t o
         err = search_via_proxy(path, &sb);
     } else {
         char url[512];
-        snprintf(url, sizeof(url), "https://api.search.brave.com%s", path);
+        snprintf(url, sizeof(url), "http://192.168.1.175:8888%s", path);
         err = search_direct(url, &sb);
     }
 

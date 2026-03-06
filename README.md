@@ -170,7 +170,9 @@ mimi> set_wifi_static 192.168.1.88 255.255.255.0 192.168.1.1 223.5.5.5 8.8.8.8
 mimi> clear_wifi_static            # switch back to DHCP
 mimi> set_tg_token 123456:ABC...   # change Telegram bot token
 mimi> set_api_key sk-ant-api03-... # change API key (Anthropic or OpenAI)
-mimi> set_model_provider openai    # switch provider (anthropic|openai)
+mimi> set_model_provider openai_compat   # anthropic | openai | openai_compat
+mimi> set_llm_base_url https://api.xxx.com/v1/chat/completions
+mimi> clear_llm_base_url          # fallback to provider default endpoint
 mimi> set_model gpt-4o             # change LLM model
 mimi> set_proxy 127.0.0.1 7897  # set HTTP proxy
 mimi> clear_proxy                  # remove proxy

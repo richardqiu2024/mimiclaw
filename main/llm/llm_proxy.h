@@ -18,7 +18,7 @@ esp_err_t llm_proxy_init(void);
 esp_err_t llm_set_api_key(const char *api_key);
 
 /**
- * Save the LLM provider to NVS. (e.g. "anthropic", "openai")
+ * Save the LLM provider to NVS. ("anthropic", "openai", "openai_compat")
  */
 esp_err_t llm_set_provider(const char *provider);
 
@@ -26,6 +26,22 @@ esp_err_t llm_set_provider(const char *provider);
  * Save the model identifier to NVS.
  */
 esp_err_t llm_set_model(const char *model);
+
+/**
+ * Save custom LLM base URL to NVS (for example an OpenAI-compatible gateway).
+ * Empty URL is invalid; use llm_clear_base_url() to clear.
+ */
+esp_err_t llm_set_base_url(const char *base_url);
+
+/**
+ * Remove custom base URL from NVS and fallback to provider default endpoint.
+ */
+esp_err_t llm_clear_base_url(void);
+
+/**
+ * Get active custom base URL string. Empty string means not configured.
+ */
+const char *llm_get_base_url(void);
 
 /* ── Tool Use Support ──────────────────────────────────────────── */
 

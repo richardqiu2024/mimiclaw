@@ -10,6 +10,41 @@ const STORAGE_KEY_LAST_DEVICE = "mimiclaw.lastDeviceId";
 const WRITE_GAP_MS = 15;
 const COMMAND_TIMEOUT_MS = 4000;
 const MAX_LOG_LINES = 300;
+const GENERIC_FAIL_PATTERN = /(failed|error|invalid|usage:)/i;
+const COMMAND_FEEDBACK_RULES = {
+  set_wifi: {
+    success: /WiFi credentials saved\./i,
+    successTitle: "WiFi 已保存",
+  },
+  set_wifi_static: {
+    success: /Static IP config saved\./i,
+    successTitle: "静态 IP 已保存",
+  },
+  clear_wifi_static: {
+    success: /Static IP config cleared\./i,
+    successTitle: "静态 IP 已清除",
+  },
+  set_api_key: {
+    success: /API key saved\./i,
+    successTitle: "API Key 已保存",
+  },
+  set_tg_token: {
+    success: /Telegram bot token saved\./i,
+    successTitle: "Telegram Token 已保存",
+  },
+  set_model: {
+    success: /Model set\./i,
+    successTitle: "模型已设置",
+  },
+  set_model_provider: {
+    success: /Model provider set\./i,
+    successTitle: "Provider 已设置",
+  },
+  config_reset: {
+    success: /All NVS config cleared\./i,
+    successTitle: "配置已重置",
+  },
+};
 
 Page({
   data: {
@@ -48,6 +83,7 @@ Page({
     this.commandTimer = null;
     this.discoveryTimer = null;
     this.currentCommand = null;
+    this.currentCommandOutput = [];
     this.serviceId = "";
     this.rxCharId = "";
     this.txCharId = "";
@@ -662,6 +698,7 @@ Page({
     const cmd = this.commandQueue.shift();
     this.setData({ commandQueueLength: this.commandQueue.length });
     this.currentCommand = cmd;
+    this.currentCommandOutput = [];
     this.appendLog(`> ${cmd}`);
 
     const payload = encodeUtf8(`${cmd}\n`);
@@ -674,7 +711,7 @@ Page({
         await this.sleep(WRITE_GAP_MS);
       } catch (err) {
         this.appendLog(`发送失败: ${err}`);
-        this.finishCurrentCommand();
+        this.finishCurrentCommand({ failed: true, errorText: String(err || "") });
         return;
       }
     }
@@ -700,7 +737,7 @@ Page({
     this.clearCommandTimer();
     this.commandTimer = setTimeout(() => {
       this.appendLog("(等待超时，无更多输出)");
-      this.finishCurrentCommand();
+      this.finishCurrentCommand({ timedOut: true });
     }, COMMAND_TIMEOUT_MS);
   },
 
@@ -711,9 +748,14 @@ Page({
     }
   },
 
-  finishCurrentCommand() {
+  finishCurrentCommand(options = {}) {
+    const command = this.currentCommand;
+    const output = this.currentCommandOutput.slice();
+
     this.clearCommandTimer();
+    this.handleCommandFeedback(command, output, options);
     this.currentCommand = null;
+    this.currentCommandOutput = [];
     if (this.commandQueue.length > 0) {
       this.sendNextCommand();
     } else {
@@ -722,15 +764,57 @@ Page({
     }
   },
 
+  handleCommandFeedback(command, outputLines, options) {
+    if (!command) return;
+
+    const cmdName = command.split(/\s+/)[0];
+    const rule = COMMAND_FEEDBACK_RULES[cmdName];
+    if (!rule) return;
+
+    const output = outputLines.join("\n");
+    if (options.failed || options.timedOut) {
+      this.showCommandToast(`${cmdName} 执行失败`, "none");
+      return;
+    }
+
+    if (GENERIC_FAIL_PATTERN.test(output)) {
+      this.showCommandToast(`${cmdName} 执行失败`, "none");
+      return;
+    }
+
+    if (rule.success.test(output)) {
+      this.showCommandToast(rule.successTitle, "success");
+      return;
+    }
+
+    this.showCommandToast(`${cmdName} 已发送`, "none");
+  },
+
+  showCommandToast(title, icon) {
+    wx.showToast({
+      title,
+      icon: icon || "none",
+      duration: 1600,
+    });
+  },
+
   appendLog(line) {
     const logs = this.data.logs.concat([line]);
     const trimmed = logs.slice(-MAX_LOG_LINES);
+    this.captureCommandOutput(line);
     this.logSeq += 1;
     this.setData({
       logs: trimmed,
       partialLine: "",
       logBottomId: `logBottom-${this.logSeq}`,
     });
+  },
+
+  captureCommandOutput(line) {
+    if (!this.currentCommand) return;
+    if (!line || line.startsWith("> ")) return;
+    if (/^\[\d{2}:\d{2}:\d{2}\]\[系统\]/.test(line)) return;
+    this.currentCommandOutput.push(line);
   },
 
   setPartialLine(line) {

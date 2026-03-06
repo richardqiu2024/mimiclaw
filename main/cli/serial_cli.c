@@ -20,10 +20,15 @@
 #include <stdint.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <lwip/inet.h>
 #include "esp_log.h"
 #include "esp_console.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
+#include "esp_http_client.h"
+#include "esp_crt_bundle.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "argtable3/argtable3.h"
@@ -102,10 +107,13 @@ static int cmd_help(int argc, char **argv)
     printf("  clear_wifi_static\n");
     printf("  wifi_status\n");
     printf("  wifi_scan\n");
+    printf("  net_test\n");
     printf("  set_tg_token <token>\n");
     printf("  set_api_key <key>\n");
     printf("  set_model <model>\n");
-    printf("  set_model_provider <anthropic|openai>\n");
+    printf("  set_model_provider <anthropic|openai|openai_compat>\n");
+    printf("  set_llm_base_url <https_url>\n");
+    printf("  clear_llm_base_url\n");
     printf("  skill_list\n");
     printf("  skill_show <name>\n");
     printf("  skill_search <keyword>\n");
@@ -268,7 +276,11 @@ static int cmd_set_api_key(int argc, char **argv)
         arg_print_errors(stderr, api_key_args.end, argv[0]);
         return 1;
     }
-    llm_set_api_key(api_key_args.key->sval[0]);
+    esp_err_t err = llm_set_api_key(api_key_args.key->sval[0]);
+    if (err != ESP_OK) {
+        printf("Failed to set API key: %s\n", esp_err_to_name(err));
+        return 1;
+    }
     printf("API key saved.\n");
     return 0;
 }
@@ -286,7 +298,11 @@ static int cmd_set_model(int argc, char **argv)
         arg_print_errors(stderr, model_args.end, argv[0]);
         return 1;
     }
-    llm_set_model(model_args.model->sval[0]);
+    esp_err_t err = llm_set_model(model_args.model->sval[0]);
+    if (err != ESP_OK) {
+        printf("Failed to set model: %s\n", esp_err_to_name(err));
+        return 1;
+    }
     printf("Model set.\n");
     return 0;
 }
@@ -304,8 +320,56 @@ static int cmd_set_model_provider(int argc, char **argv)
         arg_print_errors(stderr, provider_args.end, argv[0]);
         return 1;
     }
-    llm_set_provider(provider_args.provider->sval[0]);
+    esp_err_t err = llm_set_provider(provider_args.provider->sval[0]);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_INVALID_ARG) {
+            printf("Invalid provider. Use anthropic | openai | openai_compat\n");
+        } else {
+            printf("Failed to set provider: %s\n", esp_err_to_name(err));
+        }
+        return 1;
+    }
     printf("Model provider set.\n");
+    return 0;
+}
+
+/* --- set_llm_base_url command --- */
+static struct {
+    struct arg_str *url;
+    struct arg_end *end;
+} llm_base_url_args;
+
+static int cmd_set_llm_base_url(int argc, char **argv)
+{
+    int nerrors = arg_parse(argc, argv, (void **)&llm_base_url_args);
+    if (nerrors != 0) {
+        arg_print_errors(stderr, llm_base_url_args.end, argv[0]);
+        return 1;
+    }
+
+    esp_err_t err = llm_set_base_url(llm_base_url_args.url->sval[0]);
+    if (err != ESP_OK) {
+        printf("Invalid URL. Must be HTTPS full path, e.g. https://host/v1/chat/completions\n");
+        return 1;
+    }
+
+    printf("LLM base URL saved.\n");
+    return 0;
+}
+
+/* --- clear_llm_base_url command --- */
+static int cmd_clear_llm_base_url(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    esp_err_t err = llm_clear_base_url();
+    if (err != ESP_OK) {
+        printf("Failed to clear LLM base URL: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+
+    printf("LLM base URL cleared. Provider default endpoint will be used.\n");
     return 0;
 }
 
@@ -448,6 +512,118 @@ static int cmd_wifi_scan(int argc, char **argv)
     wifi_manager_scan_and_print();
     printf("WiFi scan completed. AP details are in ESP_LOG serial output.\n");
     return 0;
+}
+
+static int dns_lookup_ipv4(const char *host, char *out_ip, size_t out_ip_len)
+{
+    if (!host || !out_ip || out_ip_len == 0) {
+        return -1;
+    }
+
+    out_ip[0] = '\0';
+
+    struct addrinfo hints = {0};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    struct addrinfo *res = NULL;
+    int gai = getaddrinfo(host, "443", &hints, &res);
+    if (gai != 0 || !res) {
+        if (res) {
+            freeaddrinfo(res);
+        }
+        return (gai != 0) ? gai : -1;
+    }
+
+    const struct sockaddr_in *addr = (const struct sockaddr_in *)res->ai_addr;
+    if (!addr || !inet_ntop(AF_INET, &addr->sin_addr, out_ip, (socklen_t)out_ip_len)) {
+        out_ip[0] = '\0';
+    }
+
+    freeaddrinfo(res);
+    return 0;
+}
+
+static esp_err_t https_head_direct(const char *url, int timeout_ms, int *out_status)
+{
+    if (out_status) {
+        *out_status = 0;
+    }
+
+    esp_http_client_config_t config = {
+        .url = url,
+        .method = HTTP_METHOD_HEAD,
+        .timeout_ms = timeout_ms,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        return ESP_FAIL;
+    }
+
+    esp_err_t err = esp_http_client_perform(client);
+    if (err == ESP_OK && out_status) {
+        *out_status = esp_http_client_get_status_code(client);
+    }
+
+    esp_http_client_cleanup(client);
+    return err;
+}
+
+/* --- net_test command --- */
+static int cmd_net_test(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    bool all_ok = true;
+    char ip[16] = {0};
+
+    printf("Network test (direct DNS + HTTPS):\n");
+    if (http_proxy_is_enabled()) {
+        printf("Proxy is enabled; this command still checks direct path.\n");
+    }
+
+    int gai = dns_lookup_ipv4("www.google.com", ip, sizeof(ip));
+    if (gai == 0) {
+        printf("[OK]   DNS www.google.com -> %s\n", ip[0] ? ip : "(ip unavailable)");
+    } else {
+        printf("[FAIL] DNS www.google.com failed (getaddrinfo=%d)\n", gai);
+        all_ok = false;
+    }
+
+    int status = 0;
+    esp_err_t err = https_head_direct("https://www.google.com/generate_204", 10000, &status);
+    if (err == ESP_OK) {
+        printf("[OK]   HTTPS https://www.google.com/generate_204 status=%d\n", status);
+    } else {
+        printf("[FAIL] HTTPS https://www.google.com/generate_204 failed (%s)\n", esp_err_to_name(err));
+        all_ok = false;
+    }
+
+    gai = dns_lookup_ipv4("api.telegram.org", ip, sizeof(ip));
+    if (gai == 0) {
+        printf("[OK]   DNS api.telegram.org -> %s\n", ip[0] ? ip : "(ip unavailable)");
+    } else {
+        printf("[FAIL] DNS api.telegram.org failed (getaddrinfo=%d)\n", gai);
+        all_ok = false;
+    }
+
+    status = 0;
+    err = https_head_direct("https://api.telegram.org/", 10000, &status);
+    if (err == ESP_OK) {
+        printf("[OK]   HTTPS https://api.telegram.org/ status=%d\n", status);
+    } else {
+        printf("[FAIL] HTTPS https://api.telegram.org/ failed (%s)\n", esp_err_to_name(err));
+        all_ok = false;
+    }
+
+    if (!all_ok) {
+        printf("Hint: if static IP mode is enabled, set DNS1/DNS2 or run clear_wifi_static then restart.\n");
+    }
+
+    return all_ok ? 0 : 1;
 }
 
 /* --- skill_list command --- */
@@ -685,6 +861,7 @@ static int cmd_config_show(int argc, char **argv)
     print_config("API Key",    MIMI_NVS_LLM,    MIMI_NVS_KEY_API_KEY,  MIMI_SECRET_API_KEY,    true);
     print_config("Model",      MIMI_NVS_LLM,    MIMI_NVS_KEY_MODEL,    MIMI_SECRET_MODEL,      false);
     print_config("Provider",   MIMI_NVS_LLM,    MIMI_NVS_KEY_PROVIDER, MIMI_SECRET_MODEL_PROVIDER, false);
+    print_config("LLM URL",    MIMI_NVS_LLM,    MIMI_NVS_KEY_BASE_URL, "", false);
     print_config("Proxy Host", MIMI_NVS_PROXY,  MIMI_NVS_KEY_PROXY_HOST, MIMI_SECRET_PROXY_HOST, false);
     print_config("Proxy Port", MIMI_NVS_PROXY,  MIMI_NVS_KEY_PROXY_PORT, MIMI_SECRET_PROXY_PORT, false);
     print_config("Search Key", MIMI_NVS_SEARCH, MIMI_NVS_KEY_API_KEY,  MIMI_SECRET_SEARCH_KEY, true);
@@ -843,6 +1020,14 @@ esp_err_t serial_cli_init(void)
     };
     esp_console_cmd_register(&wifi_scan_cmd);
 
+    /* net_test */
+    esp_console_cmd_t net_test_cmd = {
+        .command = "net_test",
+        .help = "Test DNS/HTTPS connectivity to www.google.com and api.telegram.org",
+        .func = &cmd_net_test,
+    };
+    esp_console_cmd_register(&net_test_cmd);
+
     /* set_tg_token */
     tg_token_args.token = arg_str1(NULL, NULL, "<token>", "Telegram bot token");
     tg_token_args.end = arg_end(1);
@@ -877,15 +1062,34 @@ esp_err_t serial_cli_init(void)
     esp_console_cmd_register(&model_cmd);
 
     /* set_model_provider */
-    provider_args.provider = arg_str1(NULL, NULL, "<provider>", "Model provider (anthropic|openai)");
+    provider_args.provider = arg_str1(NULL, NULL, "<provider>", "Model provider (anthropic|openai|openai_compat)");
     provider_args.end = arg_end(1);
     esp_console_cmd_t provider_cmd = {
         .command = "set_model_provider",
-        .help = "Set LLM model provider (default: " MIMI_LLM_PROVIDER_DEFAULT ")",
+        .help = "Set LLM provider: anthropic | openai | openai_compat",
         .func = &cmd_set_model_provider,
         .argtable = &provider_args,
     };
     esp_console_cmd_register(&provider_cmd);
+
+    /* set_llm_base_url */
+    llm_base_url_args.url = arg_str1(NULL, NULL, "<https_url>", "Custom LLM endpoint URL");
+    llm_base_url_args.end = arg_end(1);
+    esp_console_cmd_t llm_base_url_cmd = {
+        .command = "set_llm_base_url",
+        .help = "Set custom HTTPS endpoint (e.g. https://host/v1/chat/completions)",
+        .func = &cmd_set_llm_base_url,
+        .argtable = &llm_base_url_args,
+    };
+    esp_console_cmd_register(&llm_base_url_cmd);
+
+    /* clear_llm_base_url */
+    esp_console_cmd_t clear_llm_base_url_cmd = {
+        .command = "clear_llm_base_url",
+        .help = "Clear custom LLM endpoint and use provider default",
+        .func = &cmd_clear_llm_base_url,
+    };
+    esp_console_cmd_register(&clear_llm_base_url_cmd);
 
     /* skill_list */
     esp_console_cmd_t skill_list_cmd = {

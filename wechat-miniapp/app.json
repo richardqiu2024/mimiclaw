@@ -4,9 +4,9 @@
   ],
   "window": {
     "navigationBarTitleText": "MimiClaw BLE CLI",
-    "navigationBarBackgroundColor": "#DFF1FF",
-    "navigationBarTextStyle": "black",
-    "backgroundColor": "#EEF7FF"
+    "navigationBarBackgroundColor": "#000000",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#000000"
   },
   "permission": {
     "scope.bluetooth": {
@@ -16,5 +16,7 @@
       "desc": "用于扫描附近的蓝牙设备"
     }
   },
-  "requiredPrivateInfos": ["getLocation"]
+  "requiredPrivateInfos": [
+    "getLocation"
+  ]
 }

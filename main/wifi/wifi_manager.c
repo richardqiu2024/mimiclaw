@@ -152,7 +152,13 @@ static esp_err_t wifi_apply_static_ip(void)
         return err;
     }
 
-    err = wifi_set_dns_if_present(ESP_NETIF_DNS_MAIN, cfg.dns1);
+    const char *dns1_to_apply = cfg.dns1;
+    if (!dns1_to_apply[0]) {
+        dns1_to_apply = cfg.gateway;
+        ESP_LOGW(TAG, "Static DNS1 empty, fallback to gateway DNS: %s", dns1_to_apply);
+    }
+
+    err = wifi_set_dns_if_present(ESP_NETIF_DNS_MAIN, dns1_to_apply);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed setting DNS1: %s", esp_err_to_name(err));
         return err;
@@ -165,7 +171,7 @@ static esp_err_t wifi_apply_static_ip(void)
 
     ESP_LOGI(TAG, "Static IP applied: ip=%s mask=%s gw=%s dns1=%s dns2=%s",
              cfg.ip, cfg.netmask, cfg.gateway,
-             cfg.dns1[0] ? cfg.dns1 : "-",
+             dns1_to_apply[0] ? dns1_to_apply : "-",
              cfg.dns2[0] ? cfg.dns2 : "-");
     return ESP_OK;
 }
@@ -359,6 +365,8 @@ esp_err_t wifi_manager_set_static_ip(const char *ip,
                                      const char *dns1,
                                      const char *dns2)
 {
+    const char *effective_dns1 = (dns1 && dns1[0]) ? dns1 : gateway;
+
     esp_ip4_addr_t parsed = {0};
     if (!parse_ipv4(ip, &parsed) ||
         !parse_ipv4(netmask, &parsed) ||
@@ -371,6 +379,10 @@ esp_err_t wifi_manager_set_static_ip(const char *ip,
     }
     if (dns2 && dns2[0] && !parse_ipv4(dns2, &parsed)) {
         return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!dns1 || !dns1[0]) {
+        ESP_LOGW(TAG, "Static DNS1 not provided, defaulting to gateway: %s", gateway);
     }
 
     nvs_handle_t nvs;
@@ -390,8 +402,8 @@ esp_err_t wifi_manager_set_static_ip(const char *ip,
         err = nvs_set_str(nvs, MIMI_NVS_KEY_WIFI_GW, gateway);
     }
     if (err == ESP_OK) {
-        if (dns1 && dns1[0]) {
-            err = nvs_set_str(nvs, MIMI_NVS_KEY_WIFI_DNS1, dns1);
+        if (effective_dns1 && effective_dns1[0]) {
+            err = nvs_set_str(nvs, MIMI_NVS_KEY_WIFI_DNS1, effective_dns1);
         } else {
             err = nvs_erase_key(nvs, MIMI_NVS_KEY_WIFI_DNS1);
             if (err == ESP_ERR_NVS_NOT_FOUND) {
@@ -420,7 +432,7 @@ esp_err_t wifi_manager_set_static_ip(const char *ip,
 
     ESP_LOGI(TAG, "Static WiFi config saved: ip=%s mask=%s gw=%s dns1=%s dns2=%s",
              ip, netmask, gateway,
-             (dns1 && dns1[0]) ? dns1 : "-",
+             (effective_dns1 && effective_dns1[0]) ? effective_dns1 : "-",
              (dns2 && dns2[0]) ? dns2 : "-");
     return ESP_OK;
 }

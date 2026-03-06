@@ -23,7 +23,7 @@ clear_wifi_static
 set_api_key <key>
 set_tg_token <token>
 set_model <model>
-set_model_provider <anthropic|openai>
+set_model_provider <deepseek|anthropic|openai|openai_compat>
 config_show
 config_reset
 wifi_status

@@ -127,8 +127,8 @@ cp main/mimi_secrets.h.example main/mimi_secrets.h
 #define MIMI_SECRET_WIFI_SSID       "你的WiFi名"
 #define MIMI_SECRET_WIFI_PASS       "你的WiFi密码"
 #define MIMI_SECRET_TG_TOKEN        "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
-#define MIMI_SECRET_API_KEY         "sk-ant-api03-xxxxx"
-#define MIMI_SECRET_MODEL_PROVIDER  "anthropic"     // "anthropic" 或 "openai"
+#define MIMI_SECRET_API_KEY         "sk-xxxx"
+#define MIMI_SECRET_MODEL_PROVIDER  "deepseek"      // "deepseek" | "anthropic" | "openai" | "openai_compat"
 #define MIMI_SECRET_SEARCH_KEY      ""              // 可选：Brave Search API key
 #define MIMI_SECRET_PROXY_HOST      "10.0.0.1"      // 可选：代理地址
 #define MIMI_SECRET_PROXY_PORT      "7897"           // 可选：代理端口
@@ -182,9 +182,9 @@ mimi> clear_proxy                    # 清除代理
 ```
 mimi> wifi_set MySSID MyPassword   # 换 WiFi
 mimi> set_tg_token 123456:ABC...   # 换 Telegram Bot Token
-mimi> set_api_key sk-ant-api03-... # 换 API Key（Anthropic 或 OpenAI）
-mimi> set_model_provider openai    # 切换提供商（anthropic|openai）
-mimi> set_model gpt-4o             # 换模型
+mimi> set_api_key sk-...           # 换 API Key（DeepSeek / Anthropic / OpenAI）
+mimi> set_model_provider deepseek  # 切换提供商（deepseek|anthropic|openai|openai_compat）
+mimi> set_model deepseek-chat      # 换模型
 mimi> set_proxy 192.168.1.83 7897  # 设置代理
 mimi> clear_proxy                  # 清除代理
 mimi> set_search_key BSA...        # 设置 Brave Search API Key

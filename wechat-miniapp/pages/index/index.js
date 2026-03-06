@@ -71,7 +71,7 @@ Page({
     apiKey: "",
     tgToken: "",
     model: "",
-    configProviderOptions: ["anthropic", "openai"],
+    configProviderOptions: ["deepseek", "anthropic", "openai", "openai_compat"],
     configProviderIndex: 0,
   },
 

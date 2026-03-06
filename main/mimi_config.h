@@ -17,13 +17,13 @@
 #define MIMI_SECRET_TG_TOKEN        ""
 #endif
 #ifndef MIMI_SECRET_API_KEY
-#define MIMI_SECRET_API_KEY         ""
+#define MIMI_SECRET_API_KEY         "sk-958ef5ddcb54408ebcea867281cf1804"
 #endif
 #ifndef MIMI_SECRET_MODEL
-#define MIMI_SECRET_MODEL           ""
+#define MIMI_SECRET_MODEL           "deepseek-chat"
 #endif
 #ifndef MIMI_SECRET_MODEL_PROVIDER
-#define MIMI_SECRET_MODEL_PROVIDER  "anthropic"
+#define MIMI_SECRET_MODEL_PROVIDER  "deepseek"
 #endif
 #ifndef MIMI_SECRET_PROXY_HOST
 #define MIMI_SECRET_PROXY_HOST      ""
@@ -65,11 +65,12 @@
 #define MIMI_TIMEZONE                "PST8PDT,M3.2.0,M11.1.0"
 
 /* LLM */
-#define MIMI_LLM_DEFAULT_MODEL       "claude-opus-4-5"
-#define MIMI_LLM_PROVIDER_DEFAULT    "anthropic"
+#define MIMI_LLM_DEFAULT_MODEL       "deepseek-chat"
+#define MIMI_LLM_PROVIDER_DEFAULT    "deepseek"
 #define MIMI_LLM_MAX_TOKENS          4096
 #define MIMI_LLM_API_URL             "https://api.anthropic.com/v1/messages"
 #define MIMI_OPENAI_API_URL          "https://api.openai.com/v1/chat/completions"
+#define MIMI_DEEPSEEK_API_URL        "https://api.deepseek.com/v1/chat/completions"
 #define MIMI_LLM_API_VERSION         "2023-06-01"
 #define MIMI_LLM_STREAM_BUF_SIZE     (32 * 1024)
 #define MIMI_LLM_LOG_VERBOSE_PAYLOAD 0
@@ -128,9 +129,9 @@
 #define MIMI_NVS_KEY_WIFI_DNS1       "dns1"
 #define MIMI_NVS_KEY_WIFI_DNS2       "dns2"
 #define MIMI_NVS_KEY_TG_TOKEN        "bot_token"
-#define MIMI_NVS_KEY_API_KEY         "sk-95677afd221cdfb6d5c10e708c918d62ce17e1e680a2d6ef15cc8dc0670f690f"
-#define MIMI_NVS_KEY_MODEL           "gpt-5.3-codex"
-#define MIMI_NVS_KEY_PROVIDER        "gmn"
-#define MIMI_NVS_KEY_BASE_URL        "https://gmn.chuangzuoli.com/v1"
+#define MIMI_NVS_KEY_API_KEY         "api_key"
+#define MIMI_NVS_KEY_MODEL           "model"
+#define MIMI_NVS_KEY_PROVIDER        "provider"
+#define MIMI_NVS_KEY_BASE_URL        "base_url"
 #define MIMI_NVS_KEY_PROXY_HOST      "host"
 #define MIMI_NVS_KEY_PROXY_PORT      "port"

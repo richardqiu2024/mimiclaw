@@ -144,17 +144,22 @@ static bool provider_is_supported(const char *provider)
     if (!provider || !provider[0]) return false;
     return strcmp(provider, "anthropic") == 0 ||
            strcmp(provider, "openai") == 0 ||
-           strcmp(provider, "openai_compat") == 0;
+           strcmp(provider, "openai_compat") == 0 ||
+           strcmp(provider, "deepseek") == 0;
 }
 
 static bool provider_is_openai(void)
 {
     return strcmp(s_provider, "openai") == 0 ||
-           strcmp(s_provider, "openai_compat") == 0;
+           strcmp(s_provider, "openai_compat") == 0 ||
+           strcmp(s_provider, "deepseek") == 0;
 }
 
 static const char *llm_default_api_url(void)
 {
+    if (strcmp(s_provider, "deepseek") == 0) {
+        return MIMI_DEEPSEEK_API_URL;
+    }
     return provider_is_openai() ? MIMI_OPENAI_API_URL : MIMI_LLM_API_URL;
 }
 

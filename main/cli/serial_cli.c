@@ -111,7 +111,7 @@ static int cmd_help(int argc, char **argv)
     printf("  set_tg_token <token>\n");
     printf("  set_api_key <key>\n");
     printf("  set_model <model>\n");
-    printf("  set_model_provider <anthropic|openai|openai_compat>\n");
+    printf("  set_model_provider <anthropic|openai|openai_compat|deepseek>\n");
     printf("  set_llm_base_url <https_url>\n");
     printf("  clear_llm_base_url\n");
     printf("  skill_list\n");
@@ -323,7 +323,7 @@ static int cmd_set_model_provider(int argc, char **argv)
     esp_err_t err = llm_set_provider(provider_args.provider->sval[0]);
     if (err != ESP_OK) {
         if (err == ESP_ERR_INVALID_ARG) {
-            printf("Invalid provider. Use anthropic | openai | openai_compat\n");
+            printf("Invalid provider. Use anthropic | openai | openai_compat | deepseek\n");
         } else {
             printf("Failed to set provider: %s\n", esp_err_to_name(err));
         }
@@ -1062,11 +1062,11 @@ esp_err_t serial_cli_init(void)
     esp_console_cmd_register(&model_cmd);
 
     /* set_model_provider */
-    provider_args.provider = arg_str1(NULL, NULL, "<provider>", "Model provider (anthropic|openai|openai_compat)");
+    provider_args.provider = arg_str1(NULL, NULL, "<provider>", "Model provider (anthropic|openai|openai_compat|deepseek)");
     provider_args.end = arg_end(1);
     esp_console_cmd_t provider_cmd = {
         .command = "set_model_provider",
-        .help = "Set LLM provider: anthropic | openai | openai_compat",
+        .help = "Set LLM provider: anthropic | openai | openai_compat | deepseek",
         .func = &cmd_set_model_provider,
         .argtable = &provider_args,
     };

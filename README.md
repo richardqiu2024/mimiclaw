@@ -127,8 +127,8 @@ Edit `main/mimi_secrets.h`:
 #define MIMI_SECRET_WIFI_SSID       "YourWiFiName"
 #define MIMI_SECRET_WIFI_PASS       "YourWiFiPassword"
 #define MIMI_SECRET_TG_TOKEN        "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
-#define MIMI_SECRET_API_KEY         "sk-ant-api03-xxxxx"
-#define MIMI_SECRET_MODEL_PROVIDER  "anthropic"     // "anthropic" or "openai"
+#define MIMI_SECRET_API_KEY         "sk-xxxx"
+#define MIMI_SECRET_MODEL_PROVIDER  "deepseek"      // "deepseek" | "anthropic" | "openai" | "openai_compat"
 #define MIMI_SECRET_SEARCH_KEY      ""              // optional: Brave Search API key
 #define MIMI_SECRET_PROXY_HOST      ""              // optional: e.g. "10.0.0.1"
 #define MIMI_SECRET_PROXY_PORT      ""              // optional: e.g. "7897"
@@ -169,11 +169,11 @@ mimi> set_wifi MySSID MyPassword   # change WiFi network
 mimi> set_wifi_static 192.168.1.88 255.255.255.0 192.168.1.1 223.5.5.5 8.8.8.8
 mimi> clear_wifi_static            # switch back to DHCP
 mimi> set_tg_token 123456:ABC...   # change Telegram bot token
-mimi> set_api_key sk-ant-api03-... # change API key (Anthropic or OpenAI)
-mimi> set_model_provider openai_compat   # anthropic | openai | openai_compat
+mimi> set_api_key sk-...            # change API key (DeepSeek / Anthropic / OpenAI)
+mimi> set_model_provider deepseek   # deepseek | anthropic | openai | openai_compat
 mimi> set_llm_base_url https://api.xxx.com/v1/chat/completions
 mimi> clear_llm_base_url          # fallback to provider default endpoint
-mimi> set_model gpt-4o             # change LLM model
+mimi> set_model deepseek-chat      # change LLM model
 mimi> set_proxy 127.0.0.1 7897  # set HTTP proxy
 mimi> clear_proxy                  # remove proxy
 mimi> set_search_key BSA...        # set Brave Search API key

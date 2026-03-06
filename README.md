@@ -115,7 +115,7 @@ xcode-select --install
 
 ### Configure
 
-MimiClaw uses a **two-layer config** system: build-time defaults in `mimi_secrets.h`, with runtime overrides via the serial CLI. CLI values are stored in NVS flash and take priority over build-time values.
+MimiClaw uses a **two-layer config** system: build-time defaults in `mimi_secrets.h`, with runtime overrides via the BLE CLI. CLI values are stored in NVS flash and take priority over build-time values.
 
 ```bash
 cp main/mimi_secrets.h.example main/mimi_secrets.h
@@ -160,12 +160,14 @@ idf.py -p PORT flash monitor
 
 ### CLI Commands
 
-Connect via serial to configure or debug. **Config commands** let you change settings without recompiling — just plug in a USB cable anywhere.
+Connect to the BLE service `MimiClaw-CLI` to configure or debug. **Config commands** let you change settings without recompiling. `ESP_LOG` and crash/debug logs still stay on USB serial monitor.
 
 **Runtime config** (saved to NVS, overrides build-time defaults):
 
 ```
-mimi> wifi_set MySSID MyPassword   # change WiFi network
+mimi> set_wifi MySSID MyPassword   # change WiFi network
+mimi> set_wifi_static 192.168.1.88 255.255.255.0 192.168.1.1 223.5.5.5 8.8.8.8
+mimi> clear_wifi_static            # switch back to DHCP
 mimi> set_tg_token 123456:ABC...   # change Telegram bot token
 mimi> set_api_key sk-ant-api03-... # change API key (Anthropic or OpenAI)
 mimi> set_model_provider openai    # switch provider (anthropic|openai)
@@ -180,7 +182,7 @@ mimi> config_reset                 # clear NVS, revert to build-time defaults
 **Debug & maintenance:**
 
 ```
-mimi> wifi_status              # am I connected?
+mimi> wifi_status              # connection + static IP status
 mimi> memory_read              # see what the bot remembers
 mimi> memory_write "content"   # write to MEMORY.md
 mimi> heap_info                # how much RAM is free?

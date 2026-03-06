@@ -14,6 +14,10 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <ctype.h>
 #include <dirent.h>
 #include "esp_log.h"
@@ -25,6 +29,102 @@
 #include "argtable3/argtable3.h"
 
 static const char *TAG = "cli";
+static bool s_cli_initialized = false;
+static serial_cli_output_cb_t s_output_cb = NULL;
+static void *s_output_ctx = NULL;
+
+static void cli_write_raw(const char *data, size_t len)
+{
+    if (!data || len == 0) return;
+
+    if (s_output_cb) {
+        s_output_cb(data, len, s_output_ctx);
+        return;
+    }
+
+    fwrite(data, 1, len, stdout);
+    fflush(stdout);
+}
+
+static int cli_printf_impl(const char *fmt, ...)
+{
+    char stack_buf[256];
+
+    va_list ap;
+    va_start(ap, fmt);
+    int needed = vsnprintf(stack_buf, sizeof(stack_buf), fmt, ap);
+    va_end(ap);
+
+    if (needed <= 0) return needed;
+    if ((size_t)needed < sizeof(stack_buf)) {
+        cli_write_raw(stack_buf, (size_t)needed);
+        return needed;
+    }
+
+    char *heap_buf = calloc(1, (size_t)needed + 1);
+    if (!heap_buf) return -1;
+
+    va_start(ap, fmt);
+    vsnprintf(heap_buf, (size_t)needed + 1, fmt, ap);
+    va_end(ap);
+    cli_write_raw(heap_buf, (size_t)needed);
+    free(heap_buf);
+    return needed;
+}
+
+static int cli_fputs_impl(const char *s, FILE *stream)
+{
+    (void)stream;
+    if (!s) return EOF;
+    size_t len = strlen(s);
+    cli_write_raw(s, len);
+    return (int)len;
+}
+
+static void cli_arg_print_errors_impl(const struct arg_end *end, const char *progname)
+{
+    (void)end;
+    cli_printf_impl("Invalid arguments for '%s'.\n", progname ? progname : "command");
+}
+
+#define printf(...) cli_printf_impl(__VA_ARGS__)
+#define fputs(s, stream) cli_fputs_impl((s), (stream))
+#define arg_print_errors(stream, end, progname) cli_arg_print_errors_impl((end), (progname))
+
+static int cmd_help(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    printf("Available commands:\n");
+    printf("  help\n");
+    printf("  set_wifi <ssid> <password>\n");
+    printf("  set_wifi_static <ip> <mask> <gateway> [dns1] [dns2]\n");
+    printf("  clear_wifi_static\n");
+    printf("  wifi_status\n");
+    printf("  wifi_scan\n");
+    printf("  set_tg_token <token>\n");
+    printf("  set_api_key <key>\n");
+    printf("  set_model <model>\n");
+    printf("  set_model_provider <anthropic|openai>\n");
+    printf("  skill_list\n");
+    printf("  skill_show <name>\n");
+    printf("  skill_search <keyword>\n");
+    printf("  memory_read\n");
+    printf("  memory_write <content>\n");
+    printf("  session_list\n");
+    printf("  session_clear <chat_id>\n");
+    printf("  heap_info\n");
+    printf("  set_search_key <key>\n");
+    printf("  set_proxy <host> <port> [http|socks5]\n");
+    printf("  clear_proxy\n");
+    printf("  config_show\n");
+    printf("  config_reset\n");
+    printf("  heartbeat_trigger\n");
+    printf("  cron_start\n");
+    printf("  tool_exec <name> [json]\n");
+    printf("  restart\n");
+    return 0;
+}
 
 /* --- wifi_set command --- */
 static struct {
@@ -40,17 +140,100 @@ static int cmd_wifi_set(int argc, char **argv)
         arg_print_errors(stderr, wifi_set_args.end, argv[0]);
         return 1;
     }
-    wifi_manager_set_credentials(wifi_set_args.ssid->sval[0],
-                                  wifi_set_args.password->sval[0]);
+    esp_err_t err = wifi_manager_set_credentials(wifi_set_args.ssid->sval[0],
+                                                 wifi_set_args.password->sval[0]);
+    if (err != ESP_OK) {
+        printf("Failed to save WiFi credentials: %s\n", esp_err_to_name(err));
+        return 1;
+    }
     printf("WiFi credentials saved. Restart to apply.\n");
+    return 0;
+}
+
+/* --- set_wifi_static command --- */
+static struct {
+    struct arg_str *ip;
+    struct arg_str *mask;
+    struct arg_str *gateway;
+    struct arg_str *dns1;
+    struct arg_str *dns2;
+    struct arg_end *end;
+} wifi_static_args;
+
+static int cmd_set_wifi_static(int argc, char **argv)
+{
+    int nerrors = arg_parse(argc, argv, (void **)&wifi_static_args);
+    if (nerrors != 0) {
+        arg_print_errors(stderr, wifi_static_args.end, argv[0]);
+        return 1;
+    }
+
+    const char *dns1 = (wifi_static_args.dns1->count > 0) ? wifi_static_args.dns1->sval[0] : "";
+    const char *dns2 = (wifi_static_args.dns2->count > 0) ? wifi_static_args.dns2->sval[0] : "";
+
+    esp_err_t err = wifi_manager_set_static_ip(wifi_static_args.ip->sval[0],
+                                               wifi_static_args.mask->sval[0],
+                                               wifi_static_args.gateway->sval[0],
+                                               dns1,
+                                               dns2);
+    if (err != ESP_OK) {
+        printf("Failed to save static IP config: %s\n", esp_err_to_name(err));
+        printf("Usage: set_wifi_static <ip> <mask> <gateway> [dns1] [dns2]\n");
+        return 1;
+    }
+
+    printf("Static IP config saved. Restart to apply.\n");
+    return 0;
+}
+
+/* --- clear_wifi_static command --- */
+static int cmd_clear_wifi_static(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    esp_err_t err = wifi_manager_clear_static_ip();
+    if (err != ESP_OK) {
+        printf("Failed to clear static IP config: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+
+    printf("Static IP config cleared. Restart to apply DHCP.\n");
     return 0;
 }
 
 /* --- wifi_status command --- */
 static int cmd_wifi_status(int argc, char **argv)
 {
+    (void)argc;
+    (void)argv;
+
     printf("WiFi connected: %s\n", wifi_manager_is_connected() ? "yes" : "no");
     printf("IP: %s\n", wifi_manager_get_ip());
+
+    bool static_enabled = wifi_manager_static_ip_enabled();
+    printf("Static IP mode: %s\n", static_enabled ? "enabled" : "disabled");
+    if (static_enabled) {
+        char ip[16] = {0};
+        char mask[16] = {0};
+        char gateway[16] = {0};
+        char dns1[16] = {0};
+        char dns2[16] = {0};
+        esp_err_t err = wifi_manager_get_static_ip(ip, sizeof(ip),
+                                                   mask, sizeof(mask),
+                                                   gateway, sizeof(gateway),
+                                                   dns1, sizeof(dns1),
+                                                   dns2, sizeof(dns2));
+        if (err == ESP_OK) {
+            printf("Static IP: %s\n", ip);
+            printf("Static Mask: %s\n", mask);
+            printf("Static Gateway: %s\n", gateway);
+            printf("Static DNS1: %s\n", dns1[0] ? dns1 : "(empty)");
+            printf("Static DNS2: %s\n", dns2[0] ? dns2 : "(empty)");
+        } else {
+            printf("Static config read failed: %s\n", esp_err_to_name(err));
+        }
+    }
     return 0;
 }
 
@@ -164,8 +347,8 @@ static int cmd_memory_write(int argc, char **argv)
 /* --- session_list command --- */
 static int cmd_session_list(int argc, char **argv)
 {
-    printf("Sessions:\n");
     session_list();
+    printf("Session list printed to ESP_LOG serial output.\n");
     return 0;
 }
 
@@ -263,6 +446,7 @@ static int cmd_wifi_scan(int argc, char **argv)
     (void)argc;
     (void)argv;
     wifi_manager_scan_and_print();
+    printf("WiFi scan completed. AP details are in ESP_LOG serial output.\n");
     return 0;
 }
 
@@ -465,11 +649,38 @@ static void print_config(const char *label, const char *ns, const char *key,
     }
 }
 
+static void print_wifi_static_enable_config(void)
+{
+    const char *source = "default";
+    const char *display = "disabled";
+
+    nvs_handle_t nvs;
+    if (nvs_open(MIMI_NVS_WIFI, NVS_READONLY, &nvs) == ESP_OK) {
+        uint8_t enabled = 0;
+        if (nvs_get_u8(nvs, MIMI_NVS_KEY_WIFI_STATIC_EN, &enabled) == ESP_OK) {
+            source = "NVS";
+            display = enabled ? "enabled" : "disabled";
+        }
+        nvs_close(nvs);
+    }
+
+    printf("  %-14s: %s  [%s]\n", "WiFi Static", display, source);
+}
+
 static int cmd_config_show(int argc, char **argv)
 {
+    (void)argc;
+    (void)argv;
+
     printf("=== Current Configuration ===\n");
     print_config("WiFi SSID",  MIMI_NVS_WIFI,   MIMI_NVS_KEY_SSID,     MIMI_SECRET_WIFI_SSID,  false);
     print_config("WiFi Pass",  MIMI_NVS_WIFI,   MIMI_NVS_KEY_PASS,     MIMI_SECRET_WIFI_PASS,  true);
+    print_wifi_static_enable_config();
+    print_config("WiFi IP",    MIMI_NVS_WIFI,   MIMI_NVS_KEY_WIFI_IP,   "", false);
+    print_config("WiFi Mask",  MIMI_NVS_WIFI,   MIMI_NVS_KEY_WIFI_MASK, "", false);
+    print_config("WiFi GW",    MIMI_NVS_WIFI,   MIMI_NVS_KEY_WIFI_GW,   "", false);
+    print_config("WiFi DNS1",  MIMI_NVS_WIFI,   MIMI_NVS_KEY_WIFI_DNS1, "", false);
+    print_config("WiFi DNS2",  MIMI_NVS_WIFI,   MIMI_NVS_KEY_WIFI_DNS2, "", false);
     print_config("TG Token",   MIMI_NVS_TG,     MIMI_NVS_KEY_TG_TOKEN, MIMI_SECRET_TG_TOKEN,   true);
     print_config("API Key",    MIMI_NVS_LLM,    MIMI_NVS_KEY_API_KEY,  MIMI_SECRET_API_KEY,    true);
     print_config("Model",      MIMI_NVS_LLM,    MIMI_NVS_KEY_MODEL,    MIMI_SECRET_MODEL,      false);
@@ -555,30 +766,31 @@ static int cmd_restart(int argc, char **argv)
     return 0;  /* unreachable */
 }
 
+void serial_cli_set_output(serial_cli_output_cb_t cb, void *ctx)
+{
+    s_output_cb = cb;
+    s_output_ctx = ctx;
+}
+
 esp_err_t serial_cli_init(void)
 {
-    esp_console_repl_t *repl = NULL;
-    esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
-    repl_config.prompt = "mimi> ";
-    repl_config.max_cmdline_length = 256;
+    if (s_cli_initialized) {
+        return ESP_OK;
+    }
 
-#if CONFIG_ESP_CONSOLE_UART_DEFAULT || CONFIG_ESP_CONSOLE_UART_CUSTOM
-    esp_console_dev_uart_config_t hw_config = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_console_new_repl_uart(&hw_config, &repl_config, &repl));
-#elif CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
-    esp_console_dev_usb_serial_jtag_config_t hw_config =
-        ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_console_new_repl_usb_serial_jtag(&hw_config, &repl_config, &repl));
-#elif CONFIG_ESP_CONSOLE_USB_CDC
-    esp_console_dev_usb_cdc_config_t hw_config = ESP_CONSOLE_DEV_CDC_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_console_new_repl_usb_cdc(&hw_config, &repl_config, &repl));
-#else
-    ESP_LOGE(TAG, "No supported console backend is enabled");
-    return ESP_ERR_NOT_SUPPORTED;
-#endif
+    esp_console_config_t console_config = {
+        .max_cmdline_length = 256,
+        .max_cmdline_args = 16,
+    };
+    ESP_ERROR_CHECK(esp_console_init(&console_config));
 
     /* Register commands */
-    esp_console_register_help_command();
+    esp_console_cmd_t help_cmd = {
+        .command = "help",
+        .help = "Show available commands",
+        .func = &cmd_help,
+    };
+    esp_console_cmd_register(&help_cmd);
 
     /* set_wifi */
     wifi_set_args.ssid = arg_str1(NULL, NULL, "<ssid>", "WiFi SSID");
@@ -592,10 +804,33 @@ esp_err_t serial_cli_init(void)
     };
     esp_console_cmd_register(&wifi_set_cmd);
 
+    /* set_wifi_static */
+    wifi_static_args.ip = arg_str1(NULL, NULL, "<ip>", "Static IPv4 address");
+    wifi_static_args.mask = arg_str1(NULL, NULL, "<mask>", "Subnet mask");
+    wifi_static_args.gateway = arg_str1(NULL, NULL, "<gateway>", "Gateway IPv4 address");
+    wifi_static_args.dns1 = arg_str0(NULL, NULL, "<dns1>", "Primary DNS (optional)");
+    wifi_static_args.dns2 = arg_str0(NULL, NULL, "<dns2>", "Secondary DNS (optional)");
+    wifi_static_args.end = arg_end(5);
+    esp_console_cmd_t wifi_static_cmd = {
+        .command = "set_wifi_static",
+        .help = "Set static IP: set_wifi_static <ip> <mask> <gateway> [dns1] [dns2]",
+        .func = &cmd_set_wifi_static,
+        .argtable = &wifi_static_args,
+    };
+    esp_console_cmd_register(&wifi_static_cmd);
+
+    /* clear_wifi_static */
+    esp_console_cmd_t clear_wifi_static_cmd = {
+        .command = "clear_wifi_static",
+        .help = "Disable static IP and clear related config",
+        .func = &cmd_clear_wifi_static,
+    };
+    esp_console_cmd_register(&clear_wifi_static_cmd);
+
     /* wifi_status */
     esp_console_cmd_t wifi_status_cmd = {
         .command = "wifi_status",
-        .help = "Show WiFi connection status",
+        .help = "Show WiFi connection status and static IP config",
         .func = &cmd_wifi_status,
     };
     esp_console_cmd_register(&wifi_status_cmd);
@@ -808,9 +1043,42 @@ esp_err_t serial_cli_init(void)
     };
     esp_console_cmd_register(&restart_cmd);
 
-    /* Start REPL */
-    ESP_ERROR_CHECK(esp_console_start_repl(repl));
-    ESP_LOGI(TAG, "Serial CLI started");
+    s_cli_initialized = true;
+    ESP_LOGI(TAG, "CLI command core initialized");
 
+    return ESP_OK;
+}
+
+esp_err_t serial_cli_run_line(const char *line)
+{
+    if (!line) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    while (*line && isspace((unsigned char)*line)) {
+        line++;
+    }
+    if (!*line) {
+        return ESP_OK;
+    }
+
+    int cmd_ret = 0;
+    esp_err_t err = esp_console_run(line, &cmd_ret);
+    if (err == ESP_ERR_NOT_FOUND) {
+        printf("Unknown command: %s\n", line);
+        return err;
+    }
+    if (err == ESP_ERR_INVALID_ARG) {
+        printf("Invalid command line.\n");
+        return err;
+    }
+    if (err != ESP_OK) {
+        printf("Command execution failed: %s\n", esp_err_to_name(err));
+        return err;
+    }
+
+    if (cmd_ret != 0) {
+        printf("Command returned %d.\n", cmd_ret);
+    }
     return ESP_OK;
 }

@@ -1,0 +1,153 @@
+<view class="tech-page">
+  <view class="grid-overlay"></view>
+  <view class="ambient ambient-left"></view>
+  <view class="ambient ambient-right"></view>
+
+  <view class="card hero-card">
+    <view class="hero-top">
+      <view class="hero-copy">
+        <view class="eyebrow">BLE CONTROL HUB</view>
+        <view class="title">MimiClaw 指挥台</view>
+        <view class="subtle">通过蓝牙与设备实时通讯，完成 CLI 配置、调试与控制。</view>
+      </view>
+      <view class="hero-status">
+        <view class="pill state-ready" wx:if="{{isReady}}">{{state}}</view>
+        <view class="pill state-link" wx:elif="{{isConnected}}">{{state}}</view>
+        <view class="pill state-scan" wx:elif="{{isDiscovering}}">{{state}}</view>
+        <view class="pill state-off" wx:else>{{state}}</view>
+        <view class="subtle">{{statusText}}</view>
+      </view>
+    </view>
+
+    <view class="row action-cluster">
+      <button class="primary" bindtap="onScan">{{isDiscovering ? "停止扫描" : "扫描设备"}}</button>
+      <button class="secondary" bindtap="onDisconnect" wx:if="{{isConnected}}">断开连接</button>
+      <button class="secondary" bindtap="onReconnect" wx:if="{{!isConnected && lastDeviceId}}">重连上次设备</button>
+    </view>
+
+    <view class="metric-row">
+      <view class="metric-item">
+        <view class="metric-label">连接</view>
+        <view class="metric-value">{{isConnected ? "在线" : "离线"}}</view>
+      </view>
+      <view class="metric-item">
+        <view class="metric-label">命令队列</view>
+        <view class="metric-value">{{commandQueueLength}}</view>
+      </view>
+      <view class="metric-item">
+        <view class="metric-label">目标设备</view>
+        <view class="metric-value metric-id">{{lastDeviceId ? lastDeviceId : "未选择"}}</view>
+      </view>
+    </view>
+  </view>
+
+  <view class="card devices-card">
+    <view class="section-head">
+      <view class="title-sm">设备雷达</view>
+      <view class="subtle">默认过滤为 MimiClaw-CLI，可切换全量扫描视图。</view>
+    </view>
+
+    <view class="row action-cluster compact">
+      <button class="secondary" bindtap="onToggleShowAll">
+        {{showAllDevices ? "仅看 MimiClaw-CLI" : "显示全部设备"}}
+      </button>
+      <button class="secondary" bindtap="onRequestPermissions">权限检查</button>
+    </view>
+
+    <view wx:if="{{devices.length === 0}}" class="empty-tip">尚未发现设备</view>
+    <view class="device-grid">
+      <view wx:for="{{devices}}" wx:key="deviceId" class="device-tile">
+        <view class="device-row">
+          <view class="device-meta">
+            <view class="device-name">{{item.name || "未命名设备"}}</view>
+            <view class="device-id">{{item.deviceId}}</view>
+            <view class="device-rssi">信号 RSSI: {{item.RSSI}}</view>
+          </view>
+          <button class="secondary connect-btn" bindtap="onConnect" data-deviceid="{{item.deviceId}}">连接</button>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <view class="card config-card">
+    <view class="section-head">
+      <view class="title-sm">配置矩阵</view>
+      <view class="subtle">输入参数后点击命令按钮，系统会自动转换为 CLI 指令发送。</view>
+    </view>
+
+    <view class="config-group">
+      <view class="group-label">网络接入</view>
+      <view class="config-block">
+        <input class="input" placeholder="WiFi SSID" value="{{wifiSsid}}" data-field="wifiSsid" bindinput="onConfigInput" />
+        <input class="input" placeholder="WiFi 密码" password="true" value="{{wifiPassword}}" data-field="wifiPassword" bindinput="onConfigInput" />
+        <button class="secondary" bindtap="onSetWifi" disabled="{{!isReady}}">set_wifi</button>
+      </view>
+
+      <view class="config-block static-ip-block">
+        <input class="input" placeholder="静态 IP (192.168.1.88)" value="{{wifiStaticIp}}" data-field="wifiStaticIp" bindinput="onConfigInput" />
+        <input class="input" placeholder="子网掩码 (255.255.255.0)" value="{{wifiStaticMask}}" data-field="wifiStaticMask" bindinput="onConfigInput" />
+        <input class="input" placeholder="网关 (192.168.1.1)" value="{{wifiStaticGateway}}" data-field="wifiStaticGateway" bindinput="onConfigInput" />
+        <input class="input" placeholder="DNS1 可选" value="{{wifiStaticDns1}}" data-field="wifiStaticDns1" bindinput="onConfigInput" />
+        <input class="input" placeholder="DNS2 可选" value="{{wifiStaticDns2}}" data-field="wifiStaticDns2" bindinput="onConfigInput" />
+        <button class="secondary" bindtap="onSetWifiStatic" disabled="{{!isReady}}">set_wifi_static</button>
+        <button class="secondary warn" bindtap="onClearWifiStatic" disabled="{{!isReady}}">clear_wifi_static</button>
+      </view>
+    </view>
+
+    <view class="config-group">
+      <view class="group-label">模型与密钥</view>
+      <view class="config-block">
+        <input class="input" placeholder="API Key" value="{{apiKey}}" data-field="apiKey" bindinput="onConfigInput" />
+        <button class="secondary" bindtap="onSetApiKey" disabled="{{!isReady}}">set_api_key</button>
+      </view>
+      <view class="config-block">
+        <input class="input" placeholder="Telegram Bot Token" value="{{tgToken}}" data-field="tgToken" bindinput="onConfigInput" />
+        <button class="secondary" bindtap="onSetTgToken" disabled="{{!isReady}}">set_tg_token</button>
+      </view>
+      <view class="config-block">
+        <input class="input" placeholder="模型名，例如 gpt-4o-mini" value="{{model}}" data-field="model" bindinput="onConfigInput" />
+        <button class="secondary" bindtap="onSetModel" disabled="{{!isReady}}">set_model</button>
+      </view>
+      <view class="config-block provider-block">
+        <picker mode="selector" range="{{configProviderOptions}}" value="{{configProviderIndex}}" bindchange="onProviderChange">
+          <view class="picker-value">{{configProviderOptions[configProviderIndex]}}</view>
+        </picker>
+        <button class="secondary" bindtap="onSetProvider" disabled="{{!isReady}}">set_model_provider</button>
+      </view>
+    </view>
+
+    <view class="row action-cluster compact">
+      <button class="secondary" bindtap="onConfigShow" disabled="{{!isReady}}">config_show</button>
+      <button class="secondary warn" bindtap="onConfigReset" disabled="{{!isReady}}">config_reset</button>
+      <button class="secondary" bindtap="onRestart" disabled="{{!isReady}}">restart</button>
+    </view>
+  </view>
+
+  <view class="card terminal-card">
+    <view class="section-head terminal-head">
+      <view>
+        <view class="title-sm">实时终端</view>
+        <view class="subtle">实时显示设备回包，自动滚动到最新输出。</view>
+      </view>
+      <view class="queue-pill">队列 {{commandQueueLength}}</view>
+    </view>
+
+    <scroll-view class="terminal" scroll-y="true" scroll-into-view="{{logBottomId}}">
+      <view wx:for="{{logs}}" wx:key="index" class="terminal-line">{{item}}</view>
+      <view wx:if="{{partialLine}}" class="terminal-line partial-line">{{partialLine}}</view>
+      <view id="{{logBottomId}}"></view>
+    </scroll-view>
+
+    <view class="row command-row">
+      <input class="input" placeholder="输入命令，例如 config_show" value="{{inputCommand}}" bindinput="onInput" />
+      <button class="primary" bindtap="onSend" disabled="{{!isReady}}">发送</button>
+    </view>
+
+    <view class="row action-cluster compact">
+      <button class="secondary" bindtap="onQuickCommand" data-cmd="help" disabled="{{!isReady}}">help</button>
+      <button class="secondary" bindtap="onQuickCommand" data-cmd="wifi_status" disabled="{{!isReady}}">wifi_status</button>
+      <button class="secondary" bindtap="onQuickCommand" data-cmd="config_show" disabled="{{!isReady}}">config_show</button>
+      <button class="secondary" bindtap="onClearLogs">清空日志</button>
+    </view>
+  </view>
+</view>

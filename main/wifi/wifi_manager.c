@@ -3,6 +3,7 @@
 
 #include <string.h>
 #include <inttypes.h>
+#include <stdlib.h>
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
@@ -15,6 +16,159 @@ static EventGroupHandle_t s_wifi_event_group;
 static int s_retry_count = 0;
 static char s_ip_str[16] = "0.0.0.0";
 static bool s_connected = false;
+static esp_netif_t *s_sta_netif = NULL;
+
+#define WIFI_IPV4_STR_LEN 16
+
+typedef struct {
+    char ip[WIFI_IPV4_STR_LEN];
+    char netmask[WIFI_IPV4_STR_LEN];
+    char gateway[WIFI_IPV4_STR_LEN];
+    char dns1[WIFI_IPV4_STR_LEN];
+    char dns2[WIFI_IPV4_STR_LEN];
+} wifi_static_cfg_t;
+
+static bool parse_ipv4(const char *text, esp_ip4_addr_t *out)
+{
+    if (!text || !text[0] || !out) {
+        return false;
+    }
+    return esp_netif_str_to_ip4(text, out) == ESP_OK;
+}
+
+static esp_err_t nvs_read_str(nvs_handle_t nvs, const char *key,
+                              char *out, size_t out_len, bool required)
+{
+    if (!out || out_len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    out[0] = '\0';
+    size_t len = out_len;
+    esp_err_t err = nvs_get_str(nvs, key, out, &len);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        return required ? ESP_ERR_NOT_FOUND : ESP_OK;
+    }
+    return err;
+}
+
+static esp_err_t wifi_static_cfg_load(wifi_static_cfg_t *cfg)
+{
+    if (!cfg) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(cfg, 0, sizeof(*cfg));
+
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(MIMI_NVS_WIFI, NVS_READONLY, &nvs);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    uint8_t enabled = 0;
+    err = nvs_get_u8(nvs, MIMI_NVS_KEY_WIFI_STATIC_EN, &enabled);
+    if (err != ESP_OK || enabled == 0) {
+        nvs_close(nvs);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    err = nvs_read_str(nvs, MIMI_NVS_KEY_WIFI_IP, cfg->ip, sizeof(cfg->ip), true);
+    if (err != ESP_OK) {
+        nvs_close(nvs);
+        return err;
+    }
+    err = nvs_read_str(nvs, MIMI_NVS_KEY_WIFI_MASK, cfg->netmask, sizeof(cfg->netmask), true);
+    if (err != ESP_OK) {
+        nvs_close(nvs);
+        return err;
+    }
+    err = nvs_read_str(nvs, MIMI_NVS_KEY_WIFI_GW, cfg->gateway, sizeof(cfg->gateway), true);
+    if (err != ESP_OK) {
+        nvs_close(nvs);
+        return err;
+    }
+    err = nvs_read_str(nvs, MIMI_NVS_KEY_WIFI_DNS1, cfg->dns1, sizeof(cfg->dns1), false);
+    if (err != ESP_OK) {
+        nvs_close(nvs);
+        return err;
+    }
+    err = nvs_read_str(nvs, MIMI_NVS_KEY_WIFI_DNS2, cfg->dns2, sizeof(cfg->dns2), false);
+    nvs_close(nvs);
+    return err;
+}
+
+static esp_err_t wifi_set_dns_if_present(esp_netif_dns_type_t type, const char *dns_str)
+{
+    if (!dns_str || !dns_str[0]) {
+        return ESP_OK;
+    }
+
+    esp_ip4_addr_t dns_ip;
+    if (!parse_ipv4(dns_str, &dns_ip)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_netif_dns_info_t dns = {0};
+    dns.ip.u_addr.ip4 = dns_ip;
+    dns.ip.type = ESP_IPADDR_TYPE_V4;
+    return esp_netif_set_dns_info(s_sta_netif, type, &dns);
+}
+
+static esp_err_t wifi_apply_static_ip(void)
+{
+    if (!s_sta_netif) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    wifi_static_cfg_t cfg = {0};
+    esp_err_t err = wifi_static_cfg_load(&cfg);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    esp_ip4_addr_t ip = {0};
+    esp_ip4_addr_t netmask = {0};
+    esp_ip4_addr_t gateway = {0};
+    if (!parse_ipv4(cfg.ip, &ip) ||
+        !parse_ipv4(cfg.netmask, &netmask) ||
+        !parse_ipv4(cfg.gateway, &gateway)) {
+        ESP_LOGE(TAG, "Static IP config invalid in NVS");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    err = esp_netif_dhcpc_stop(s_sta_netif);
+    if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+        ESP_LOGE(TAG, "Failed stopping DHCP client: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    esp_netif_ip_info_t ip_info = {0};
+    ip_info.ip = ip;
+    ip_info.netmask = netmask;
+    ip_info.gw = gateway;
+    err = esp_netif_set_ip_info(s_sta_netif, &ip_info);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed setting static IP info: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = wifi_set_dns_if_present(ESP_NETIF_DNS_MAIN, cfg.dns1);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed setting DNS1: %s", esp_err_to_name(err));
+        return err;
+    }
+    err = wifi_set_dns_if_present(ESP_NETIF_DNS_BACKUP, cfg.dns2);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed setting DNS2: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGI(TAG, "Static IP applied: ip=%s mask=%s gw=%s dns1=%s dns2=%s",
+             cfg.ip, cfg.netmask, cfg.gateway,
+             cfg.dns1[0] ? cfg.dns1 : "-",
+             cfg.dns2[0] ? cfg.dns2 : "-");
+    return ESP_OK;
+}
 
 static const char *wifi_reason_to_str(wifi_err_reason_t reason)
 {
@@ -36,8 +190,16 @@ static const char *wifi_reason_to_str(wifi_err_reason_t reason)
 static void event_handler(void *arg, esp_event_base_t event_base,
                           int32_t event_id, void *event_data)
 {
+    (void)arg;
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+        esp_err_t err = wifi_apply_static_ip();
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "Static IPv4 mode enabled");
+        } else if (err != ESP_ERR_NOT_FOUND) {
+            ESP_LOGW(TAG, "Static IP apply skipped: %s", esp_err_to_name(err));
+        }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         s_connected = false;
         wifi_event_sta_disconnected_t *disc = (wifi_event_sta_disconnected_t *)event_data;
@@ -75,7 +237,11 @@ esp_err_t wifi_manager_init(void)
     s_wifi_event_group = xEventGroupCreate();
 
     ESP_ERROR_CHECK(esp_netif_init());
-    esp_netif_create_default_wifi_sta();
+    s_sta_netif = esp_netif_create_default_wifi_sta();
+    if (!s_sta_netif) {
+        ESP_LOGE(TAG, "Failed to create default STA netif");
+        return ESP_FAIL;
+    }
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -95,6 +261,11 @@ esp_err_t wifi_manager_start(void)
 {
     wifi_config_t wifi_cfg = {0};
     bool found = false;
+
+    s_connected = false;
+    s_retry_count = 0;
+    snprintf(s_ip_str, sizeof(s_ip_str), "0.0.0.0");
+    xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
 
     /* NVS overrides take highest priority (set via CLI) */
     nvs_handle_t nvs;
@@ -118,7 +289,7 @@ esp_err_t wifi_manager_start(void)
     }
 
     if (!found) {
-        ESP_LOGW(TAG, "No WiFi credentials. Use CLI: wifi_set <SSID> <PASS>");
+        ESP_LOGW(TAG, "No WiFi credentials. Use CLI: set_wifi <SSID> <PASS>");
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -155,14 +326,223 @@ const char *wifi_manager_get_ip(void)
 
 esp_err_t wifi_manager_set_credentials(const char *ssid, const char *password)
 {
+    if (!ssid || !password || !ssid[0]) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     nvs_handle_t nvs;
-    ESP_ERROR_CHECK(nvs_open(MIMI_NVS_WIFI, NVS_READWRITE, &nvs));
-    ESP_ERROR_CHECK(nvs_set_str(nvs, MIMI_NVS_KEY_SSID, ssid));
-    ESP_ERROR_CHECK(nvs_set_str(nvs, MIMI_NVS_KEY_PASS, password));
-    ESP_ERROR_CHECK(nvs_commit(nvs));
+    esp_err_t err = nvs_open(MIMI_NVS_WIFI, NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = nvs_set_str(nvs, MIMI_NVS_KEY_SSID, ssid);
+    if (err == ESP_OK) {
+        err = nvs_set_str(nvs, MIMI_NVS_KEY_PASS, password);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs);
+    }
     nvs_close(nvs);
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
     ESP_LOGI(TAG, "WiFi credentials saved for SSID: %s", ssid);
     return ESP_OK;
+}
+
+esp_err_t wifi_manager_set_static_ip(const char *ip,
+                                     const char *netmask,
+                                     const char *gateway,
+                                     const char *dns1,
+                                     const char *dns2)
+{
+    esp_ip4_addr_t parsed = {0};
+    if (!parse_ipv4(ip, &parsed) ||
+        !parse_ipv4(netmask, &parsed) ||
+        !parse_ipv4(gateway, &parsed)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (dns1 && dns1[0] && !parse_ipv4(dns1, &parsed)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (dns2 && dns2[0] && !parse_ipv4(dns2, &parsed)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(MIMI_NVS_WIFI, NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = nvs_set_u8(nvs, MIMI_NVS_KEY_WIFI_STATIC_EN, 1);
+    if (err == ESP_OK) {
+        err = nvs_set_str(nvs, MIMI_NVS_KEY_WIFI_IP, ip);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_str(nvs, MIMI_NVS_KEY_WIFI_MASK, netmask);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_str(nvs, MIMI_NVS_KEY_WIFI_GW, gateway);
+    }
+    if (err == ESP_OK) {
+        if (dns1 && dns1[0]) {
+            err = nvs_set_str(nvs, MIMI_NVS_KEY_WIFI_DNS1, dns1);
+        } else {
+            err = nvs_erase_key(nvs, MIMI_NVS_KEY_WIFI_DNS1);
+            if (err == ESP_ERR_NVS_NOT_FOUND) {
+                err = ESP_OK;
+            }
+        }
+    }
+    if (err == ESP_OK) {
+        if (dns2 && dns2[0]) {
+            err = nvs_set_str(nvs, MIMI_NVS_KEY_WIFI_DNS2, dns2);
+        } else {
+            err = nvs_erase_key(nvs, MIMI_NVS_KEY_WIFI_DNS2);
+            if (err == ESP_ERR_NVS_NOT_FOUND) {
+                err = ESP_OK;
+            }
+        }
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs);
+    }
+    nvs_close(nvs);
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    ESP_LOGI(TAG, "Static WiFi config saved: ip=%s mask=%s gw=%s dns1=%s dns2=%s",
+             ip, netmask, gateway,
+             (dns1 && dns1[0]) ? dns1 : "-",
+             (dns2 && dns2[0]) ? dns2 : "-");
+    return ESP_OK;
+}
+
+esp_err_t wifi_manager_clear_static_ip(void)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(MIMI_NVS_WIFI, NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = nvs_set_u8(nvs, MIMI_NVS_KEY_WIFI_STATIC_EN, 0);
+    if (err == ESP_OK) {
+        err = nvs_erase_key(nvs, MIMI_NVS_KEY_WIFI_IP);
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            err = ESP_OK;
+        }
+    }
+    if (err == ESP_OK) {
+        err = nvs_erase_key(nvs, MIMI_NVS_KEY_WIFI_MASK);
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            err = ESP_OK;
+        }
+    }
+    if (err == ESP_OK) {
+        err = nvs_erase_key(nvs, MIMI_NVS_KEY_WIFI_GW);
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            err = ESP_OK;
+        }
+    }
+    if (err == ESP_OK) {
+        err = nvs_erase_key(nvs, MIMI_NVS_KEY_WIFI_DNS1);
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            err = ESP_OK;
+        }
+    }
+    if (err == ESP_OK) {
+        err = nvs_erase_key(nvs, MIMI_NVS_KEY_WIFI_DNS2);
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            err = ESP_OK;
+        }
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs);
+    }
+    nvs_close(nvs);
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    ESP_LOGI(TAG, "Static WiFi config cleared; DHCP mode will be used");
+    return ESP_OK;
+}
+
+esp_err_t wifi_manager_get_static_ip(char *ip, size_t ip_len,
+                                     char *netmask, size_t netmask_len,
+                                     char *gateway, size_t gateway_len,
+                                     char *dns1, size_t dns1_len,
+                                     char *dns2, size_t dns2_len)
+{
+    if (!ip || ip_len == 0 ||
+        !netmask || netmask_len == 0 ||
+        !gateway || gateway_len == 0 ||
+        !dns1 || dns1_len == 0 ||
+        !dns2 || dns2_len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ip[0] = '\0';
+    netmask[0] = '\0';
+    gateway[0] = '\0';
+    dns1[0] = '\0';
+    dns2[0] = '\0';
+
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(MIMI_NVS_WIFI, NVS_READONLY, &nvs);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    uint8_t enabled = 0;
+    err = nvs_get_u8(nvs, MIMI_NVS_KEY_WIFI_STATIC_EN, &enabled);
+    if (err != ESP_OK || enabled == 0) {
+        nvs_close(nvs);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    err = nvs_read_str(nvs, MIMI_NVS_KEY_WIFI_IP, ip, ip_len, true);
+    if (err == ESP_OK) {
+        err = nvs_read_str(nvs, MIMI_NVS_KEY_WIFI_MASK, netmask, netmask_len, true);
+    }
+    if (err == ESP_OK) {
+        err = nvs_read_str(nvs, MIMI_NVS_KEY_WIFI_GW, gateway, gateway_len, true);
+    }
+    if (err == ESP_OK) {
+        err = nvs_read_str(nvs, MIMI_NVS_KEY_WIFI_DNS1, dns1, dns1_len, false);
+    }
+    if (err == ESP_OK) {
+        err = nvs_read_str(nvs, MIMI_NVS_KEY_WIFI_DNS2, dns2, dns2_len, false);
+    }
+    nvs_close(nvs);
+
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    return err;
+}
+
+bool wifi_manager_static_ip_enabled(void)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(MIMI_NVS_WIFI, NVS_READONLY, &nvs);
+    if (err != ESP_OK) {
+        return false;
+    }
+
+    uint8_t enabled = 0;
+    err = nvs_get_u8(nvs, MIMI_NVS_KEY_WIFI_STATIC_EN, &enabled);
+    nvs_close(nvs);
+    return (err == ESP_OK && enabled != 0);
 }
 
 EventGroupHandle_t wifi_manager_get_event_group(void)

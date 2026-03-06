@@ -121,6 +121,12 @@
 /* NVS Keys */
 #define MIMI_NVS_KEY_SSID            "ssid"
 #define MIMI_NVS_KEY_PASS            "password"
+#define MIMI_NVS_KEY_WIFI_STATIC_EN  "static_en"
+#define MIMI_NVS_KEY_WIFI_IP         "ip"
+#define MIMI_NVS_KEY_WIFI_MASK       "mask"
+#define MIMI_NVS_KEY_WIFI_GW         "gw"
+#define MIMI_NVS_KEY_WIFI_DNS1       "dns1"
+#define MIMI_NVS_KEY_WIFI_DNS2       "dns2"
 #define MIMI_NVS_KEY_TG_TOKEN        "bot_token"
 #define MIMI_NVS_KEY_API_KEY         "api_key"
 #define MIMI_NVS_KEY_MODEL           "model"

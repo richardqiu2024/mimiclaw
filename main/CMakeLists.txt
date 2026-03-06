@@ -16,6 +16,7 @@ idf_component_register(
         "memory/session_mgr.c"
         "gateway/ws_server.c"
         "cli/serial_cli.c"
+        "cli/ble_cli.c"
         "proxy/http_proxy.c"
         "cron/cron_service.c"
         "heartbeat/heartbeat.c"
@@ -30,5 +31,5 @@ idf_component_register(
     REQUIRES
         nvs_flash esp_wifi esp_netif esp_http_client esp_http_server
         esp_https_ota esp_event json spiffs console vfs app_update esp-tls
-        driver esp_timer
+        driver esp_timer bt
 )

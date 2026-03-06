@@ -143,8 +143,9 @@ main/
 │   └── http_proxy.c        HTTP CONNECT tunnel + TLS via esp_tls
 │
 ├── cli/
-│   ├── serial_cli.h        CLI init API
-│   └── serial_cli.c        esp_console REPL with debug/maintenance commands
+│   ├── serial_cli.h        CLI command core API
+│   ├── serial_cli.c        esp_console command registry + dispatcher
+│   └── ble_cli.c           BLE GATT transport for CLI input/output
 │
 └── ota/
     ├── ota_manager.h       OTA update API
@@ -160,7 +161,7 @@ main/
 | `tg_poll`          | 0    | 5        | 12 KB  | Telegram long polling (30s timeout)  |
 | `agent_loop`       | 1    | 6        | 12 KB  | Message processing + Claude API call |
 | `outbound`         | 0    | 5        | 8 KB   | Route responses to Telegram / WS     |
-| `serial_cli`       | 0    | 3        | 4 KB   | USB serial console REPL              |
+| `ble_cli_worker`   | 0    | 4        | 6 KB   | BLE CLI command execution task        |
 | httpd (internal)   | 0    | 5        | —      | WebSocket server (esp_http_server)   |
 | wifi_event (IDF)   | 0    | 8        | —      | WiFi event handling (ESP-IDF)        |
 
@@ -345,7 +346,7 @@ app_main()
   ├── llm_proxy_init()              Load API key + model from build-time secrets
   ├── tool_registry_init()          Register tools, build tools JSON
   ├── agent_loop_init()
-  ├── serial_cli_init()             Start REPL (works without WiFi)
+  ├── ble_cli_init()                Start BLE CLI (works without WiFi)
   │
   ├── wifi_manager_start()          Connect using build-time credentials
   │   └── wifi_manager_wait_connected(30s)
@@ -361,9 +362,9 @@ If WiFi credentials are missing or connection times out, the CLI remains availab
 
 ---
 
-## Serial CLI Commands
+## BLE CLI Commands
 
-The CLI provides debug and maintenance commands only. All configuration is done via `mimi_secrets.h`.
+The CLI provides debug and maintenance commands. Connect over BLE (`MimiClaw-CLI`) and use the same command set. `ESP_LOG` and panic/debug output stay on USB serial.
 
 | Command                        | Description                          |
 |--------------------------------|--------------------------------------|
@@ -390,7 +391,7 @@ The CLI provides debug and maintenance commands only. All configuration is done 
 | `bus/events.py` + `queue.py`| `bus/message_bus.c`            | FreeRTOS queues vs asyncio   |
 | `providers/litellm_provider.py` | `llm/llm_proxy.c`         | Direct Anthropic API only    |
 | `config/schema.py`          | `mimi_config.h` + `mimi_secrets.h` | Build-time secrets only  |
-| `cli/commands.py`           | `cli/serial_cli.c`             | esp_console REPL             |
+| `cli/commands.py`           | `cli/serial_cli.c` + `cli/ble_cli.c` | esp_console + BLE transport |
 | `agent/tools/*`             | `tools/tool_registry.c` + `tool_web_search.c` | web_search via Brave API |
 | `agent/subagent.py`         | *(not yet implemented)*        | See TODO.md                  |
 | `agent/skills.py`           | *(not yet implemented)*        | See TODO.md                  |

@@ -18,7 +18,7 @@
 #include "memory/memory_store.h"
 #include "memory/session_mgr.h"
 #include "gateway/ws_server.h"
-#include "cli/serial_cli.h"
+#include "cli/ble_cli.h"
 #include "proxy/http_proxy.h"
 #include "tools/tool_registry.h"
 #include "cron/cron_service.h"
@@ -134,8 +134,8 @@ void app_main(void)
     ESP_ERROR_CHECK(heartbeat_init());
     ESP_ERROR_CHECK(agent_loop_init());
 
-    /* Start Serial CLI first (works without WiFi) */
-    ESP_ERROR_CHECK(serial_cli_init());
+    /* Start BLE CLI first (works without WiFi). ESP_LOG stays on serial console. */
+    ESP_ERROR_CHECK(ble_cli_init());
 
     /* Start WiFi */
     esp_err_t wifi_err = wifi_manager_start();
@@ -168,5 +168,5 @@ void app_main(void)
         ESP_LOGW(TAG, "No WiFi credentials. Set MIMI_SECRET_WIFI_SSID in mimi_secrets.h");
     }
 
-    ESP_LOGI(TAG, "MimiClaw ready. Type 'help' for CLI commands.");
+    ESP_LOGI(TAG, "MimiClaw ready. BLE CLI is available. Type 'help' after connecting.");
 }

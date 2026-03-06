@@ -1,0 +1,20 @@
+{
+  "pages": [
+    "pages/index/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "MimiClaw BLE CLI",
+    "navigationBarBackgroundColor": "#DFF1FF",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#EEF7FF"
+  },
+  "permission": {
+    "scope.bluetooth": {
+      "desc": "用于连接 MimiClaw 蓝牙设备"
+    },
+    "scope.userLocation": {
+      "desc": "用于扫描附近的蓝牙设备"
+    }
+  },
+  "requiredPrivateInfos": ["getLocation"]
+}

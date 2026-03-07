@@ -26,6 +26,7 @@
 #include "buttons/button_driver.h"
 #include "imu/imu_manager.h"
 #include "skills/skill_loader.h"
+#include "display/display_panel.h"
 
 static const char *TAG = "mimi";
 
@@ -119,6 +120,13 @@ void app_main(void)
     ESP_ERROR_CHECK(init_nvs());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(init_spiffs());
+
+    esp_err_t display_err = display_panel_init();
+    if (display_err == ESP_OK) {
+        display_panel_show_boot();
+    } else {
+        ESP_LOGW(TAG, "Display init skipped: %s", esp_err_to_name(display_err));
+    }
 
     /* Initialize subsystems */
     ESP_ERROR_CHECK(message_bus_init());

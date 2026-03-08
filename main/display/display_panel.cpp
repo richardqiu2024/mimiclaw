@@ -10,6 +10,7 @@
 #include "freertos/task.h"
 #include "hardware/echoear_config.h"
 #include "display/miniclaw_logo.h"
+#include "display/lvgl_v8_port.h"
 
 using namespace esp_panel::board;
 using namespace esp_panel::drivers;
@@ -30,6 +31,7 @@ static echoear_config_t s_echoear_config = {
     .touch_pad2 = ECHOEAR_TOUCH_PAD2_V1_0,
 };
 static bool s_ready = false;
+static bool s_lvgl_ready = false;
 
 static void configure_echoear_display_power(void)
 {
@@ -290,6 +292,46 @@ extern "C" esp_err_t display_panel_init(void)
     s_ready = true;
     ESP_LOGI(TAG, "Display initialized: %dx%d", s_lcd->getFrameWidth(), s_lcd->getFrameHeight());
     return ESP_OK;
+}
+
+extern "C" esp_err_t display_panel_init_lvgl(void)
+{
+    if (!s_ready || !s_board || !s_lcd) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_lvgl_ready) {
+        return ESP_OK;
+    }
+
+    if (!lvgl_port_init(s_lcd, s_board->getTouch())) {
+        ESP_LOGE(TAG, "LVGL port init failed");
+        return ESP_FAIL;
+    }
+
+    s_lvgl_ready = true;
+    ESP_LOGI(TAG, "LVGL initialized");
+    return ESP_OK;
+}
+
+extern "C" bool display_panel_lvgl_lock(int timeout_ms)
+{
+    if (!s_lvgl_ready) {
+        return false;
+    }
+    return lvgl_port_lock(timeout_ms);
+}
+
+extern "C" bool display_panel_lvgl_unlock(void)
+{
+    if (!s_lvgl_ready) {
+        return false;
+    }
+    return lvgl_port_unlock();
+}
+
+extern "C" bool display_panel_lvgl_is_ready(void)
+{
+    return s_lvgl_ready;
 }
 
 extern "C" esp_err_t display_panel_fill_rgb565(uint16_t color)

@@ -27,6 +27,7 @@
 #include "imu/imu_manager.h"
 #include "skills/skill_loader.h"
 #include "display/display_panel.h"
+#include "ui/config_screen.h"
 
 static const char *TAG = "mimi";
 
@@ -121,7 +122,11 @@ void app_main(void)
 
     esp_err_t display_err = display_panel_init();
     if (display_err == ESP_OK) {
-        display_panel_show_boot();
+        if (config_screen_init() == ESP_OK) {
+            config_screen_set_phase("CORE START");
+        } else {
+            display_panel_show_boot();
+        }
     } else {
         ESP_LOGW(TAG, "Display init skipped: %s", esp_err_to_name(display_err));
     }
@@ -143,13 +148,17 @@ void app_main(void)
     ESP_ERROR_CHECK(cron_service_init());
     ESP_ERROR_CHECK(heartbeat_init());
     ESP_ERROR_CHECK(agent_loop_init());
+    config_screen_set_phase("SERVICES READY");
 
     /* Start BLE CLI first (works without WiFi). ESP_LOG stays on serial console. */
     ESP_ERROR_CHECK(ble_cli_init());
+    config_screen_set_ble_ready(true);
+    config_screen_set_phase("BLE READY");
 
     /* Start WiFi */
     esp_err_t wifi_err = wifi_manager_start();
     if (wifi_err == ESP_OK) {
+        config_screen_set_phase("WIFI START");
         ESP_LOGI(TAG, "Scanning nearby APs on boot...");
         wifi_manager_scan_and_print();
         ESP_LOGI(TAG, "Waiting for WiFi connection...");
@@ -171,11 +180,15 @@ void app_main(void)
             ESP_ERROR_CHECK(ws_server_start());
 
             ESP_LOGI(TAG, "All services started!");
+            config_screen_set_phase("SYSTEM READY");
+            config_screen_set_agent_ready(true);
         } else {
             ESP_LOGW(TAG, "WiFi connection timeout. Check MIMI_SECRET_WIFI_SSID in mimi_secrets.h");
+            config_screen_set_phase("WIFI TIMEOUT");
         }
     } else {
         ESP_LOGW(TAG, "No WiFi credentials. Set MIMI_SECRET_WIFI_SSID in mimi_secrets.h");
+        config_screen_set_phase("SET WIFI IN CLI");
     }
 
     ESP_LOGI(TAG, "MimiClaw ready. BLE CLI is available. Type 'help' after connecting.");

@@ -46,6 +46,8 @@
 #define ECHOEAR_AUDIO_I2C_SDA               GPIO_NUM_2
 #define ECHOEAR_AUDIO_I2C_SCL               GPIO_NUM_1
 #define ECHOEAR_AUDIO_I2C_FREQ_HZ           100000
+// Use a temporary bus instance for board-version probing to avoid runtime conflicts.
+#define ECHOEAR_DETECT_I2C_NUM              I2C_NUM_1
 
 // Audio Codec I2C Addresses
 #define ECHOEAR_ES8311_ADDR                 0x18    // DAC (Speaker)
@@ -108,6 +110,7 @@
 // =============================================================================
 
 #define ECHOEAR_POWER_CTRL                  GPIO_NUM_9
+#define ECHOEAR_POWER_CTRL_ON_LEVEL         0
 #define ECHOEAR_LED_GREEN                   GPIO_NUM_43
 
 // =============================================================================

@@ -5,6 +5,10 @@
 #include "esp_display_panel.hpp"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "hardware/echoear_config.h"
 
 using namespace esp_panel::board;
 using namespace esp_panel::drivers;
@@ -13,11 +17,102 @@ static const char *TAG = "display_panel";
 
 static Board *s_board = nullptr;
 static LCD *s_lcd = nullptr;
-static uint16_t *s_framebuffer = nullptr;
-static size_t s_pixel_count = 0;
+static uint16_t *s_fill_buffer = nullptr;
+static int s_fill_buffer_lines = 0;
+static echoear_config_t s_echoear_config = {
+    .pcb_version = ECHOEAR_PCB_V1_0,
+    .i2s_din = ECHOEAR_I2S_DIN_V1_0,
+    .pa_pin = ECHOEAR_PA_PIN_V1_0,
+    .lcd_rst = ECHOEAR_LCD_RST_V1_0,
+    .uart1_tx = ECHOEAR_UART1_TX_V1_0,
+    .uart1_rx = ECHOEAR_UART1_RX_V1_0,
+    .touch_pad2 = ECHOEAR_TOUCH_PAD2_V1_0,
+};
 static bool s_ready = false;
 
-static esp_err_t alloc_framebuffer(void)
+static void configure_echoear_display_power(void)
+{
+    gpio_config_t cfg = {
+        .pin_bit_mask = (1ULL << ECHOEAR_POWER_CTRL) | (1ULL << ECHOEAR_LCD_BACKLIGHT),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    esp_err_t err = gpio_config(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "gpio_config(power/backlight) failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    (void)gpio_set_level(ECHOEAR_POWER_CTRL, ECHOEAR_POWER_CTRL_ON_LEVEL);
+    int backlight_on_level = ECHOEAR_LCD_BACKLIGHT_INVERT ? 0 : 1;
+    (void)gpio_set_level(ECHOEAR_LCD_BACKLIGHT, backlight_on_level);
+    ESP_LOGI(
+        TAG, "Display power configured: POWER_CTRL(GPIO%d)=%d",
+        (int)ECHOEAR_POWER_CTRL, ECHOEAR_POWER_CTRL_ON_LEVEL
+    );
+    ESP_LOGI(
+        TAG, "Backlight GPIO forced on: GPIO%d=%d", (int)ECHOEAR_LCD_BACKLIGHT, backlight_on_level
+    );
+    vTaskDelay(pdMS_TO_TICKS(20));
+}
+
+static void load_echoear_display_config(void)
+{
+    echoear_config_t cfg = {};
+    esp_err_t err = echoear_config_init(&cfg);
+    if ((err == ESP_OK) || (err == ESP_ERR_NOT_FOUND)) {
+        s_echoear_config = cfg;
+        ESP_LOGI(
+            TAG, "LCD RST selected: GPIO%d (PCB=%s)",
+            (int)cfg.lcd_rst, (cfg.pcb_version == ECHOEAR_PCB_V1_2) ? "V1.2" : "V1.0"
+        );
+        return;
+    }
+
+    ESP_LOGW(
+        TAG, "PCB detect failed: %s, fallback LCD RST to GPIO%d",
+        esp_err_to_name(err), (int)ECHOEAR_LCD_RST_V1_0
+    );
+}
+
+static void reset_lcd_by_gpio(const echoear_config_t *cfg)
+{
+    gpio_num_t rst_gpio = cfg ? cfg->lcd_rst : ECHOEAR_LCD_RST_V1_0;
+    if (rst_gpio < 0) {
+        ESP_LOGW(TAG, "Skip LCD reset: invalid rst gpio");
+        return;
+    }
+
+    gpio_config_t gpio_cfg = {
+        .pin_bit_mask = (1ULL << rst_gpio),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    esp_err_t err = gpio_config(&gpio_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "LCD rst gpio_config failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    int reset_active_level = (cfg && (cfg->pcb_version == ECHOEAR_PCB_V1_2)) ? 1 : 0;
+    int reset_inactive_level = !reset_active_level;
+    (void)gpio_set_level(rst_gpio, reset_inactive_level);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    (void)gpio_set_level(rst_gpio, reset_active_level);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    (void)gpio_set_level(rst_gpio, reset_inactive_level);
+    vTaskDelay(pdMS_TO_TICKS(120));
+    ESP_LOGI(
+        TAG, "LCD reset pulse sent on GPIO%d (active_level=%d)",
+        (int)rst_gpio, reset_active_level
+    );
+}
+
+static esp_err_t alloc_fill_buffer(void)
 {
     if (!s_lcd) {
         return ESP_ERR_INVALID_STATE;
@@ -30,16 +125,52 @@ static esp_err_t alloc_framebuffer(void)
         return ESP_FAIL;
     }
 
-    s_pixel_count = (size_t)width * (size_t)height;
-    size_t bytes = s_pixel_count * sizeof(uint16_t);
-
-    s_framebuffer = (uint16_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_framebuffer) {
-        s_framebuffer = (uint16_t *)heap_caps_malloc(bytes, MALLOC_CAP_8BIT);
+    // SPI panel IO requires DMA-capable source buffers.
+    int lines = (height < 32) ? height : 32;
+    while (lines > 0) {
+        size_t bytes = (size_t)width * (size_t)lines * sizeof(uint16_t);
+        s_fill_buffer = (uint16_t *)heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+        if (s_fill_buffer) {
+            s_fill_buffer_lines = lines;
+            return ESP_OK;
+        }
+        lines /= 2;
     }
-    if (!s_framebuffer) {
-        ESP_LOGE(TAG, "Framebuffer allocation failed (%u bytes)", (unsigned)bytes);
-        return ESP_ERR_NO_MEM;
+
+    ESP_LOGE(TAG, "DMA fill buffer allocation failed");
+    return ESP_ERR_NO_MEM;
+}
+
+static inline uint16_t rgb565_to_panel_bytes(uint16_t color)
+{
+    return (uint16_t)((color << 8) | (color >> 8));
+}
+
+static esp_err_t display_panel_fill_rect_rgb565(int x_start, int y_start, int width, int height, uint16_t color)
+{
+    if (!s_ready || !s_lcd || !s_fill_buffer || (s_fill_buffer_lines <= 0)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if ((width <= 0) || (height <= 0)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint16_t panel_color = rgb565_to_panel_bytes(color);
+    size_t chunk_pixels = (size_t)width * (size_t)s_fill_buffer_lines;
+    for (size_t index = 0; index < chunk_pixels; ++index) {
+        s_fill_buffer[index] = panel_color;
+    }
+
+    for (int y = y_start; y < (y_start + height); y += s_fill_buffer_lines) {
+        int chunk_height = (y_start + height) - y;
+        if (chunk_height > s_fill_buffer_lines) {
+            chunk_height = s_fill_buffer_lines;
+        }
+        if (!s_lcd->drawBitmap(x_start, y, width, chunk_height, (const uint8_t *)s_fill_buffer, -1)) {
+            ESP_LOGE(TAG, "drawBitmap failed at x=%d y=%d", x_start, y);
+            return ESP_FAIL;
+        }
     }
 
     return ESP_OK;
@@ -50,6 +181,10 @@ extern "C" esp_err_t display_panel_init(void)
     if (s_ready) {
         return ESP_OK;
     }
+
+    configure_echoear_display_power();
+    load_echoear_display_config();
+    reset_lcd_by_gpio(&s_echoear_config);
 
     Board *board = new (std::nothrow) Board();
     if (!board) {
@@ -80,7 +215,7 @@ extern "C" esp_err_t display_panel_init(void)
     s_board = board;
     s_lcd = lcd;
 
-    esp_err_t err = alloc_framebuffer();
+    esp_err_t err = alloc_fill_buffer();
     if (err != ESP_OK) {
         s_board->del();
         delete s_board;
@@ -91,7 +226,15 @@ extern "C" esp_err_t display_panel_init(void)
 
     auto backlight = s_board->getBacklight();
     if (backlight) {
-        backlight->setBrightness(100);
+        if (!backlight->setBrightness(100)) {
+            ESP_LOGW(TAG, "Backlight driver setBrightness failed, fallback to GPIO");
+            int backlight_on_level = ECHOEAR_LCD_BACKLIGHT_INVERT ? 0 : 1;
+            (void)gpio_set_level(ECHOEAR_LCD_BACKLIGHT, backlight_on_level);
+        }
+    } else {
+        ESP_LOGW(TAG, "No backlight driver, fallback to GPIO");
+        int backlight_on_level = ECHOEAR_LCD_BACKLIGHT_INVERT ? 0 : 1;
+        (void)gpio_set_level(ECHOEAR_LCD_BACKLIGHT, backlight_on_level);
     }
 
     s_ready = true;
@@ -101,22 +244,11 @@ extern "C" esp_err_t display_panel_init(void)
 
 extern "C" esp_err_t display_panel_fill_rgb565(uint16_t color)
 {
-    if (!s_ready || !s_lcd || !s_framebuffer) {
+    if (!s_lcd) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    for (size_t index = 0; index < s_pixel_count; ++index) {
-        s_framebuffer[index] = color;
-    }
-
-    int width = s_lcd->getFrameWidth();
-    int height = s_lcd->getFrameHeight();
-    if (!s_lcd->drawBitmap(0, 0, width, height, (const uint8_t *)s_framebuffer, -1)) {
-        ESP_LOGE(TAG, "drawBitmap failed");
-        return ESP_FAIL;
-    }
-
-    return ESP_OK;
+    return display_panel_fill_rect_rgb565(0, 0, s_lcd->getFrameWidth(), s_lcd->getFrameHeight(), color);
 }
 
 extern "C" esp_err_t display_panel_show_boot(void)

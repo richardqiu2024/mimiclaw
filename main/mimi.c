@@ -113,8 +113,6 @@ void app_main(void)
 
     /* Input */
     button_Init();
-    imu_manager_init();
-    imu_manager_set_shake_callback(NULL);
 
     /* Phase 1: Core infrastructure */
     ESP_ERROR_CHECK(init_nvs());
@@ -127,6 +125,10 @@ void app_main(void)
     } else {
         ESP_LOGW(TAG, "Display init skipped: %s", esp_err_to_name(display_err));
     }
+
+    // Init IMU after display, to avoid early GPIO47 takeover on EchoEar V1.2 LCD reset pin.
+    imu_manager_init();
+    imu_manager_set_shake_callback(NULL);
 
     /* Initialize subsystems */
     ESP_ERROR_CHECK(message_bus_init());

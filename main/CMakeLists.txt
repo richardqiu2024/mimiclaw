@@ -26,6 +26,7 @@ idf_component_register(
         "tools/tool_get_time.c"
         "tools/tool_files.c"
         "skills/skill_loader.c"
+        "hardware/echoear_config.c"
         "display/display_panel.cpp"
     INCLUDE_DIRS
         "."

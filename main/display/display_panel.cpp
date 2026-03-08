@@ -177,31 +177,46 @@ static esp_err_t display_panel_fill_rect_rgb565(int x_start, int y_start, int wi
     return ESP_OK;
 }
 
-static esp_err_t display_panel_draw_rgb565_bitmap(
-    int x_start, int y_start, int width, int height, const uint16_t *bitmap
+static esp_err_t display_panel_draw_rgb565_bitmap_reference_scaled(
+    int x_start, int y_start, int src_width, int src_height, int scale, const uint16_t *bitmap
 )
 {
     if (!s_ready || !s_lcd || !s_fill_buffer || (s_fill_buffer_lines <= 0) || (bitmap == nullptr)) {
         return ESP_ERR_INVALID_STATE;
     }
-    if ((width <= 0) || (height <= 0)) {
+    if ((src_width <= 0) || (src_height <= 0) || (scale <= 0)) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    for (int y = 0; y < height; y += s_fill_buffer_lines) {
-        int chunk_height = height - y;
+    int dst_width = src_height * scale;
+    int dst_height = src_width * scale;
+    if ((dst_width > s_lcd->getFrameWidth()) || (dst_height > s_lcd->getFrameHeight())) {
+        ESP_LOGE(TAG, "Scaled logo exceeds frame: %dx%d -> %dx%d", src_width, src_height, dst_width, dst_height);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    for (int y = 0; y < dst_height; y += s_fill_buffer_lines) {
+        int chunk_height = dst_height - y;
         if (chunk_height > s_fill_buffer_lines) {
             chunk_height = s_fill_buffer_lines;
         }
 
-        size_t chunk_pixels = (size_t)width * (size_t)chunk_height;
-        size_t row_offset = (size_t)y * (size_t)width;
-        for (size_t index = 0; index < chunk_pixels; ++index) {
-            s_fill_buffer[index] = rgb565_to_panel_bytes(bitmap[row_offset + index]);
+        for (int chunk_row = 0; chunk_row < chunk_height; ++chunk_row) {
+            int dst_y = y + chunk_row;
+            for (int dst_x = 0; dst_x < dst_width; ++dst_x) {
+                // Reference upright orientation validated on EchoEar ST77916.
+                // Future logos and UI assets should treat this transform as the
+                // display-space baseline while the panel keeps SWAP_XY enabled.
+                int src_x = src_width - 1 - (dst_y / scale);
+                int src_y = dst_x / scale;
+                size_t src_index = (size_t)src_y * (size_t)src_width + (size_t)src_x;
+                size_t dst_index = (size_t)chunk_row * (size_t)dst_width + (size_t)dst_x;
+                s_fill_buffer[dst_index] = rgb565_to_panel_bytes(bitmap[src_index]);
+            }
         }
 
         if (!s_lcd->drawBitmap(
-                x_start, y_start + y, width, chunk_height, (const uint8_t *)s_fill_buffer, -1
+                x_start, y_start + y, dst_width, chunk_height, (const uint8_t *)s_fill_buffer, -1
             )) {
             ESP_LOGE(TAG, "drawBitmap failed for boot logo at x=%d y=%d", x_start, y_start + y);
             return ESP_FAIL;
@@ -294,8 +309,12 @@ extern "C" esp_err_t display_panel_show_boot(void)
 
     int frame_width = s_lcd->getFrameWidth();
     int frame_height = s_lcd->getFrameHeight();
-    int logo_x = (frame_width - MINICLAW_LOGO_WIDTH) / 2;
-    int logo_y = (frame_height - MINICLAW_LOGO_HEIGHT) / 2 - 10;
+    static constexpr int kLogoScale = 3;
+    // This is the validated reference orientation and size for the current panel setup.
+    int logo_width = MINICLAW_LOGO_HEIGHT * kLogoScale;
+    int logo_height = MINICLAW_LOGO_WIDTH * kLogoScale;
+    int logo_x = (frame_width - logo_width) / 2;
+    int logo_y = (frame_height - logo_height) / 2 - 10;
     if (logo_y < 0) {
         logo_y = 0;
     }
@@ -306,8 +325,8 @@ extern "C" esp_err_t display_panel_show_boot(void)
     }
 
     ESP_LOGI(TAG, "Showing MiniClaw boot logo");
-    return display_panel_draw_rgb565_bitmap(
-        logo_x, logo_y, MINICLAW_LOGO_WIDTH, MINICLAW_LOGO_HEIGHT, MINICLAW_LOGO_RGB565
+    return display_panel_draw_rgb565_bitmap_reference_scaled(
+        logo_x, logo_y, MINICLAW_LOGO_WIDTH, MINICLAW_LOGO_HEIGHT, kLogoScale, MINICLAW_LOGO_RGB565
     );
 }
 

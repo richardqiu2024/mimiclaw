@@ -52,6 +52,8 @@ File: `main/display/display_panel.cpp`
 - Runtime EchoEar PCB config loading
 - Version-aware LCD reset pulse
 - RGB565 fill byte swap before DMA draw
+- Boot logo reference orientation locked in as the validated upright baseline
+- Future image/UI orientation work should use this baseline while `ESP_PANEL_BOARD_LCD_SWAP_XY = 1`
 
 ## Files Changed
 
@@ -78,3 +80,13 @@ Result:
 ## Follow-Up
 
 Next recommended step is to apply the same confirmed color handling to any future RGB565 image, font, or UI drawing path, not only the boot solid-fill path.
+
+## Orientation Baseline
+
+The boot logo orientation confirmed by on-device validation is now the project reference orientation.
+
+Reference rules:
+
+- Keep `ESP_PANEL_BOARD_LCD_SWAP_XY = 1`
+- Treat the transform in `main/display/display_panel.cpp` boot logo draw path as the upright display-space baseline
+- Future bitmap, font, and UI layout adjustments should be measured against this validated baseline, not against raw source image orientation

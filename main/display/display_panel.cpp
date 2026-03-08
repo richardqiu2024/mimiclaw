@@ -9,6 +9,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hardware/echoear_config.h"
+#include "display/miniclaw_logo.h"
 
 using namespace esp_panel::board;
 using namespace esp_panel::drivers;
@@ -176,6 +177,40 @@ static esp_err_t display_panel_fill_rect_rgb565(int x_start, int y_start, int wi
     return ESP_OK;
 }
 
+static esp_err_t display_panel_draw_rgb565_bitmap(
+    int x_start, int y_start, int width, int height, const uint16_t *bitmap
+)
+{
+    if (!s_ready || !s_lcd || !s_fill_buffer || (s_fill_buffer_lines <= 0) || (bitmap == nullptr)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if ((width <= 0) || (height <= 0)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    for (int y = 0; y < height; y += s_fill_buffer_lines) {
+        int chunk_height = height - y;
+        if (chunk_height > s_fill_buffer_lines) {
+            chunk_height = s_fill_buffer_lines;
+        }
+
+        size_t chunk_pixels = (size_t)width * (size_t)chunk_height;
+        size_t row_offset = (size_t)y * (size_t)width;
+        for (size_t index = 0; index < chunk_pixels; ++index) {
+            s_fill_buffer[index] = rgb565_to_panel_bytes(bitmap[row_offset + index]);
+        }
+
+        if (!s_lcd->drawBitmap(
+                x_start, y_start + y, width, chunk_height, (const uint8_t *)s_fill_buffer, -1
+            )) {
+            ESP_LOGE(TAG, "drawBitmap failed for boot logo at x=%d y=%d", x_start, y_start + y);
+            return ESP_FAIL;
+        }
+    }
+
+    return ESP_OK;
+}
+
 extern "C" esp_err_t display_panel_init(void)
 {
     if (s_ready) {
@@ -253,7 +288,27 @@ extern "C" esp_err_t display_panel_fill_rgb565(uint16_t color)
 
 extern "C" esp_err_t display_panel_show_boot(void)
 {
-    return display_panel_fill_rgb565(0x001F);
+    if (!s_lcd) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    int frame_width = s_lcd->getFrameWidth();
+    int frame_height = s_lcd->getFrameHeight();
+    int logo_x = (frame_width - MINICLAW_LOGO_WIDTH) / 2;
+    int logo_y = (frame_height - MINICLAW_LOGO_HEIGHT) / 2 - 10;
+    if (logo_y < 0) {
+        logo_y = 0;
+    }
+
+    esp_err_t err = display_panel_fill_rgb565(MINICLAW_LOGO_RGB565[0]);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    ESP_LOGI(TAG, "Showing MiniClaw boot logo");
+    return display_panel_draw_rgb565_bitmap(
+        logo_x, logo_y, MINICLAW_LOGO_WIDTH, MINICLAW_LOGO_HEIGHT, MINICLAW_LOGO_RGB565
+    );
 }
 
 extern "C" bool display_panel_is_ready(void)

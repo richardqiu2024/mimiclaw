@@ -8,6 +8,7 @@
 - 板级配置：`main/conf/esp_panel_board_custom_conf.h`
 - 显示服务：`main/display/display_panel.h`
 - 显示实现：`main/display/display_panel.cpp`
+- 开机 Logo 位图：`main/display/miniclaw_logo.h`
 - 启动接入点：`main/mimi.c`
 - 自定义头搜索路径：`CMakeLists.txt`
 
@@ -21,7 +22,7 @@
 
 ## 当前行为
 
-设备启动后尝试初始化显示，成功则渲染启动底色；失败不会阻塞主业务流程。
+设备启动后尝试初始化显示，成功则渲染 MiniClaw 开机背景和内嵌位图 Logo；失败不会阻塞主业务流程。
 
 ## 若要调整引脚
 

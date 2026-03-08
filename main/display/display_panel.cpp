@@ -33,6 +33,13 @@ static echoear_config_t s_echoear_config = {
 static bool s_ready = false;
 static bool s_lvgl_ready = false;
 
+static lv_disp_rot_t get_reference_rotation(void)
+{
+    // Validated upright display-space baseline for the EchoEar 360x360 round panel.
+    // Future LVGL screens should inherit this instead of assuming LV_DISP_ROT_NONE.
+    return LV_DISP_ROT_270;
+}
+
 static void configure_echoear_display_power(void)
 {
     gpio_config_t cfg = {
@@ -309,6 +316,15 @@ extern "C" esp_err_t display_panel_init_lvgl(void)
     }
 
     s_lvgl_ready = true;
+    if (display_panel_lvgl_lock(1000)) {
+        lv_disp_t *display = lv_disp_get_default();
+        if (display) {
+            lv_disp_set_rotation(display, get_reference_rotation());
+        }
+        display_panel_lvgl_unlock();
+    } else {
+        ESP_LOGW(TAG, "LVGL lock timeout, skip applying reference rotation");
+    }
     ESP_LOGI(TAG, "LVGL initialized");
     return ESP_OK;
 }
@@ -375,4 +391,9 @@ extern "C" esp_err_t display_panel_show_boot(void)
 extern "C" bool display_panel_is_ready(void)
 {
     return s_ready;
+}
+
+extern "C" uint16_t display_panel_get_reference_rotation_degrees(void)
+{
+    return 270;
 }

@@ -17,6 +17,9 @@ static const char *TAG = "config_screen";
 #define CONFIG_SCREEN_CENTER          (CONFIG_SCREEN_SIZE / 2)
 #define CONFIG_SCREEN_ROT_NAMESPACE   "display"
 #define CONFIG_SCREEN_ROT_KEY         "rotation"
+#define CONFIG_SCREEN_ROT_FORMAT_KEY  "rotation_fmt"
+#define CONFIG_SCREEN_ROT_FORMAT_V2   2
+#define CONFIG_SCREEN_MARKER_INSET    28
 
 static bool s_active = false;
 static bool s_details_visible = true;
@@ -95,6 +98,11 @@ static lv_disp_rot_t rotation_from_degrees(uint16_t degrees)
     }
 }
 
+static lv_disp_rot_t get_reference_rotation(void)
+{
+    return rotation_from_degrees(display_panel_get_reference_rotation_degrees());
+}
+
 static const char *find_nearest_reference_name(const lv_point_t *point)
 {
     uint32_t best_distance = UINT32_MAX;
@@ -117,13 +125,25 @@ static esp_err_t load_saved_rotation(lv_disp_rot_t *rotation)
 {
     nvs_handle_t handle;
     uint16_t stored_degrees = 0;
+    uint8_t rotation_format = 0;
+    bool is_legacy_rotation = false;
     esp_err_t err = nvs_open(CONFIG_SCREEN_ROT_NAMESPACE, NVS_READONLY, &handle);
 
     if (err == ESP_ERR_NVS_NOT_FOUND) {
-        *rotation = LV_DISP_ROT_NONE;
+        *rotation = get_reference_rotation();
         return ESP_OK;
     }
     if (err != ESP_OK) {
+        return err;
+    }
+
+    err = nvs_get_u8(handle, CONFIG_SCREEN_ROT_FORMAT_KEY, &rotation_format);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        is_legacy_rotation = true;
+    } else if (err == ESP_OK) {
+        is_legacy_rotation = (rotation_format != CONFIG_SCREEN_ROT_FORMAT_V2);
+    } else if (err != ESP_OK) {
+        nvs_close(handle);
         return err;
     }
 
@@ -131,11 +151,17 @@ static esp_err_t load_saved_rotation(lv_disp_rot_t *rotation)
     nvs_close(handle);
 
     if (err == ESP_ERR_NVS_NOT_FOUND) {
-        *rotation = LV_DISP_ROT_NONE;
+        *rotation = get_reference_rotation();
         return ESP_OK;
     }
     if (err != ESP_OK) {
         return err;
+    }
+
+    if (is_legacy_rotation) {
+        stored_degrees = (uint16_t)(
+            (stored_degrees + rotation_to_degrees(get_reference_rotation())) % 360
+        );
     }
 
     *rotation = rotation_from_degrees(stored_degrees);
@@ -151,6 +177,9 @@ static esp_err_t save_rotation(lv_disp_rot_t rotation)
     }
 
     err = nvs_set_u16(handle, CONFIG_SCREEN_ROT_KEY, rotation_to_degrees(rotation));
+    if (err == ESP_OK) {
+        err = nvs_set_u8(handle, CONFIG_SCREEN_ROT_FORMAT_KEY, CONFIG_SCREEN_ROT_FORMAT_V2);
+    }
     if (err == ESP_OK) {
         err = nvs_commit(handle);
     }
@@ -440,7 +469,7 @@ static void button_timer_cb(lv_timer_t *timer)
         set_details_visible_locked(!s_details_visible);
         break;
     case LONG_PRESS_START:
-        apply_rotation_locked(LV_DISP_ROT_NONE, true);
+        apply_rotation_locked(get_reference_rotation(), true);
         break;
     default:
         break;
@@ -488,36 +517,40 @@ static void build_screen_locked(void)
     lv_obj_set_style_bg_opa(center_vline, LV_OPA_40, 0);
     lv_obj_set_style_bg_color(center_vline, lv_color_hex(0x475569), 0);
 
-    create_reference_marker(s_screen, CONFIG_SCREEN_CENTER, 4, 0xF97316);
-    create_reference_marker(s_screen, CONFIG_SCREEN_CENTER, CONFIG_SCREEN_SIZE - 5, 0x10B981);
-    create_reference_marker(s_screen, 4, CONFIG_SCREEN_CENTER, 0x38BDF8);
-    create_reference_marker(s_screen, CONFIG_SCREEN_SIZE - 5, CONFIG_SCREEN_CENTER, 0xA78BFA);
-    create_reference_marker(s_screen, CONFIG_SCREEN_CENTER, CONFIG_SCREEN_CENTER, 0xF8FAFC);
-
     lv_obj_t *top_label = create_tag_label(
         s_screen, "TOP\n180,0", 70, lv_color_hex(0xFED7AA), lv_color_hex(0x7C2D12)
     );
-    lv_obj_align(top_label, LV_ALIGN_TOP_MID, 0, 14);
+    lv_obj_align(top_label, LV_ALIGN_TOP_MID, 0, 52);
 
     lv_obj_t *bottom_label = create_tag_label(
         s_screen, "BOTTOM\n180,359", 100, lv_color_hex(0xA7F3D0), lv_color_hex(0x064E3B)
     );
-    lv_obj_align(bottom_label, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_align(bottom_label, LV_ALIGN_BOTTOM_MID, 0, -48);
 
     lv_obj_t *left_label = create_tag_label(
         s_screen, "LEFT\n0,180", 74, lv_color_hex(0xBAE6FD), lv_color_hex(0x0C4A6E)
     );
-    lv_obj_align(left_label, LV_ALIGN_LEFT_MID, 10, 0);
+    lv_obj_align(left_label, LV_ALIGN_LEFT_MID, 46, 0);
 
     lv_obj_t *right_label = create_tag_label(
         s_screen, "RIGHT\n359,180", 84, lv_color_hex(0xDDD6FE), lv_color_hex(0x4C1D95)
     );
-    lv_obj_align(right_label, LV_ALIGN_RIGHT_MID, -10, 0);
+    lv_obj_align(right_label, LV_ALIGN_RIGHT_MID, -46, 0);
 
     center_label = create_tag_label(
         s_screen, "CENTER\n180,180", 104, lv_color_hex(0xF8FAFC), lv_color_hex(0x1E293B)
     );
-    lv_obj_align(center_label, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align(center_label, LV_ALIGN_CENTER, 0, 34);
+
+    create_reference_marker(s_screen, CONFIG_SCREEN_CENTER, CONFIG_SCREEN_MARKER_INSET, 0xF97316);
+    create_reference_marker(
+        s_screen, CONFIG_SCREEN_CENTER, CONFIG_SCREEN_SIZE - 1 - CONFIG_SCREEN_MARKER_INSET, 0x10B981
+    );
+    create_reference_marker(s_screen, CONFIG_SCREEN_MARKER_INSET, CONFIG_SCREEN_CENTER, 0x38BDF8);
+    create_reference_marker(
+        s_screen, CONFIG_SCREEN_SIZE - 1 - CONFIG_SCREEN_MARKER_INSET, CONFIG_SCREEN_CENTER, 0xA78BFA
+    );
+    create_reference_marker(s_screen, CONFIG_SCREEN_CENTER, CONFIG_SCREEN_CENTER, 0xF8FAFC);
 
     s_touch_hline = lv_obj_create(s_screen);
     lv_obj_remove_style_all(s_touch_hline);
@@ -564,7 +597,7 @@ static void build_screen_locked(void)
 
     hint_label = lv_label_create(s_details_panel);
     lv_obj_set_width(hint_label, 320);
-    lv_label_set_text(hint_label, "Boot: 1x rotate  2x info  long 0deg | Touch to read XY");
+    lv_label_set_text(hint_label, "Boot: 1x rotate  2x info  long ref | Touch to read XY");
     lv_obj_align(hint_label, LV_ALIGN_TOP_MID, 0, 96);
     lv_obj_set_style_text_font(hint_label, &lv_font_montserrat_10, 0);
     lv_obj_set_style_text_color(hint_label, lv_color_hex(0xCBD5E1), 0);
@@ -593,7 +626,7 @@ static void build_screen_locked(void)
 esp_err_t config_screen_init(void)
 {
     esp_err_t err;
-    lv_disp_rot_t saved_rotation = LV_DISP_ROT_NONE;
+    lv_disp_rot_t saved_rotation = get_reference_rotation();
 
     if (!display_panel_is_ready()) {
         ESP_LOGW(TAG, "Display is not ready, skip config screen");

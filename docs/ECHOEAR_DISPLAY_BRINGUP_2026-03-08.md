@@ -39,6 +39,8 @@ File: `main/conf/esp_panel_board_custom_conf.h`
 - `ESP_PANEL_BOARD_LCD_COLOR_BGR_ORDER = 0`
 - `ESP_PANEL_BOARD_LCD_COLOR_INEVRT_BIT = 1`
 - `ESP_PANEL_BOARD_LCD_SWAP_XY = 1`
+- `ESP_PANEL_BOARD_LCD_MIRROR_X = 1`
+- `ESP_PANEL_BOARD_LCD_MIRROR_Y = 0`
 - `ESP_PANEL_BOARD_BACKLIGHT_TYPE = ESP_PANEL_BACKLIGHT_TYPE_PWM_LEDC`
 - EchoEar ST77916 vendor init command table is defined
 
@@ -53,7 +55,8 @@ File: `main/display/display_panel.cpp`
 - Version-aware LCD reset pulse
 - RGB565 fill byte swap before DMA draw
 - Boot logo reference orientation locked in as the validated upright baseline
-- Future image/UI orientation work should use this baseline while `ESP_PANEL_BOARD_LCD_SWAP_XY = 1`
+- LVGL reference rotation is locked to `270°`
+- Future image/UI orientation work should use this baseline while `ESP_PANEL_BOARD_LCD_SWAP_XY = 1` and `ESP_PANEL_BOARD_LCD_MIRROR_X = 1`
 
 ## Files Changed
 
@@ -88,5 +91,7 @@ The boot logo orientation confirmed by on-device validation is now the project r
 Reference rules:
 
 - Keep `ESP_PANEL_BOARD_LCD_SWAP_XY = 1`
+- Keep `ESP_PANEL_BOARD_LCD_MIRROR_X = 1`
+- Keep LVGL default/reference rotation at `270°`
 - Treat the transform in `main/display/display_panel.cpp` boot logo draw path as the upright display-space baseline
 - Future bitmap, font, and UI layout adjustments should be measured against this validated baseline, not against raw source image orientation

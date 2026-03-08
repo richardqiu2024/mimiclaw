@@ -34,8 +34,15 @@
 #define ESP_PANEL_BOARD_LCD_COLOR_BGR_ORDER     (0)
 #define ESP_PANEL_BOARD_LCD_COLOR_INEVRT_BIT    (1)
 
+/*
+ * Validated EchoEar 1.85" round ST77916 baseline:
+ * - 360x360 circular panel
+ * - panel-space transform must stay SWAP_XY=1, MIRROR_X=1, MIRROR_Y=0
+ * - higher-level UI/assets should align to this baseline instead of redefining
+ *   per-screen mirroring rules
+ */
 #define ESP_PANEL_BOARD_LCD_SWAP_XY             (1)
-#define ESP_PANEL_BOARD_LCD_MIRROR_X            (0)
+#define ESP_PANEL_BOARD_LCD_MIRROR_X            (1)
 #define ESP_PANEL_BOARD_LCD_MIRROR_Y            (0)
 #define ESP_PANEL_BOARD_LCD_GAP_X               (0)
 #define ESP_PANEL_BOARD_LCD_GAP_Y               (0)

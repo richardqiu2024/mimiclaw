@@ -44,7 +44,12 @@ static void imu_task(void *arg)
 
 void imu_manager_init(void)
 {
-    I2C_Init();
+    esp_err_t err = I2C_Init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Skip IMU init because I2C is unavailable");
+        return;
+    }
+
     QMI8658_Init();
     xTaskCreatePinnedToCore(imu_task, "imu_task", 4096, NULL, 4, NULL, 0);
 }

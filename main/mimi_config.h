@@ -39,7 +39,7 @@
 #endif
 
 #ifndef MIMI_TOUCH_TEST_MODE
-#define MIMI_TOUCH_TEST_MODE        1
+#define MIMI_TOUCH_TEST_MODE        0
 #endif
 
 /* WiFi */

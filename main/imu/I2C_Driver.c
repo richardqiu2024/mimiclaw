@@ -23,15 +23,23 @@ static esp_err_t i2c_master_init(void)
         .master.clk_speed = I2C_MASTER_FREQ_HZ,
     };
 
-    i2c_param_config(i2c_master_port, &conf);
+    esp_err_t err = i2c_param_config(i2c_master_port, &conf);
+    if (err != ESP_OK) {
+        return err;
+    }
 
     return i2c_driver_install(i2c_master_port, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
 }
-void I2C_Init(void)
+esp_err_t I2C_Init(void)
 {
-    /********************* I2C *********************/
-    ESP_ERROR_CHECK(i2c_master_init());
-    ESP_LOGI(I2C_TAG, "I2C initialized successfully");  
+    esp_err_t err = i2c_master_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(I2C_TAG, "I2C init failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGI(I2C_TAG, "I2C initialized successfully");
+    return ESP_OK;
 }
 
 

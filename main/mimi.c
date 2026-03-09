@@ -146,8 +146,12 @@ void app_main(void)
         display_panel_show_boot();
     }
 
-    // Init IMU after display, to avoid early GPIO47 takeover on EchoEar V1.2 LCD reset pin.
-    imu_manager_init();
+    // Skip legacy IMU init while touch is active; both paths currently contend on I2C/GPIO.
+    if (display_panel_touch_is_ready()) {
+        ESP_LOGW(TAG, "Skip IMU init because active touch panel conflicts with legacy IMU I2C setup");
+    } else {
+        imu_manager_init();
+    }
     imu_manager_set_shake_callback(NULL);
 
     /* Initialize subsystems */

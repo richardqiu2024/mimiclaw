@@ -21,6 +21,10 @@ static Board *s_board = nullptr;
 static LCD *s_lcd = nullptr;
 static uint16_t *s_fill_buffer = nullptr;
 static int s_fill_buffer_lines = 0;
+static bool s_touch_transform_captured = false;
+static bool s_touch_init_swap_xy = false;
+static bool s_touch_init_mirror_x = false;
+static bool s_touch_init_mirror_y = false;
 static echoear_config_t s_echoear_config = {
     .pcb_version = ECHOEAR_PCB_V1_0,
     .i2s_din = ECHOEAR_I2S_DIN_V1_0,
@@ -38,6 +42,63 @@ static lv_disp_rot_t get_reference_rotation(void)
     // Validated upright display-space baseline for the EchoEar 360x360 round panel.
     // Future LVGL screens should inherit this instead of assuming LV_DISP_ROT_NONE.
     return LV_DISP_ROT_270;
+}
+
+static void sync_touch_to_display_rotation(lv_disp_rot_t rotation)
+{
+    Touch *touch = (s_board != nullptr) ? s_board->getTouch() : nullptr;
+    if (touch == nullptr) {
+        return;
+    }
+
+    if (!s_touch_transform_captured) {
+        const auto &transformation = touch->getTransformation();
+        s_touch_init_swap_xy = transformation.swap_xy;
+        s_touch_init_mirror_x = transformation.mirror_x;
+        s_touch_init_mirror_y = transformation.mirror_y;
+        s_touch_transform_captured = true;
+        ESP_LOGI(
+            TAG, "Touch baseline captured: swap=%d mirror_x=%d mirror_y=%d",
+            s_touch_init_swap_xy, s_touch_init_mirror_x, s_touch_init_mirror_y
+        );
+    }
+
+    bool swap_xy = s_touch_init_swap_xy;
+    bool mirror_x = s_touch_init_mirror_x;
+    bool mirror_y = s_touch_init_mirror_y;
+
+    switch (rotation) {
+    case LV_DISP_ROT_NONE:
+        break;
+    case LV_DISP_ROT_90:
+        swap_xy = !s_touch_init_swap_xy;
+        mirror_y = !s_touch_init_mirror_y;
+        break;
+    case LV_DISP_ROT_180:
+        mirror_x = !s_touch_init_mirror_x;
+        mirror_y = !s_touch_init_mirror_y;
+        break;
+    case LV_DISP_ROT_270:
+        swap_xy = !s_touch_init_swap_xy;
+        mirror_x = !s_touch_init_mirror_x;
+        break;
+    default:
+        ESP_LOGW(TAG, "Unknown LVGL rotation for touch sync: %d", (int)rotation);
+        return;
+    }
+
+    if (!touch->swapXY(swap_xy) || !touch->mirrorX(mirror_x) || !touch->mirrorY(mirror_y)) {
+        ESP_LOGW(
+            TAG, "Touch sync failed for rotation=%d -> swap=%d mirror_x=%d mirror_y=%d",
+            (int)rotation, swap_xy, mirror_x, mirror_y
+        );
+        return;
+    }
+
+    ESP_LOGI(
+        TAG, "Touch aligned to display rotation=%d -> swap=%d mirror_x=%d mirror_y=%d",
+        (int)rotation, swap_xy, mirror_x, mirror_y
+    );
 }
 
 static void configure_echoear_display_power(void)
@@ -318,9 +379,11 @@ extern "C" esp_err_t display_panel_init_lvgl(void)
     s_lvgl_ready = true;
     if (display_panel_lvgl_lock(1000)) {
         lv_disp_t *display = lv_disp_get_default();
-        if (display) {
-            lv_disp_set_rotation(display, get_reference_rotation());
+        lv_disp_rot_t rotation = get_reference_rotation();
+        if (display != nullptr) {
+            lv_disp_set_rotation(display, rotation);
         }
+        sync_touch_to_display_rotation(rotation);
         display_panel_lvgl_unlock();
     } else {
         ESP_LOGW(TAG, "LVGL lock timeout, skip applying reference rotation");

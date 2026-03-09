@@ -30,6 +30,7 @@ idf_component_register(
         "display/display_panel.cpp"
         "display/lvgl_v8_port.cpp"
         "ui/config_screen.c"
+        "ui/touch_test_screen.c"
     INCLUDE_DIRS
         "."
     REQUIRES

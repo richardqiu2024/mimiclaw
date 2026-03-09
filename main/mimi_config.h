@@ -38,6 +38,10 @@
 #define MIMI_SECRET_SEARCH_KEY      ""
 #endif
 
+#ifndef MIMI_TOUCH_TEST_MODE
+#define MIMI_TOUCH_TEST_MODE        1
+#endif
+
 /* WiFi */
 #define MIMI_WIFI_MAX_RETRY          10
 #define MIMI_WIFI_RETRY_BASE_MS      1000

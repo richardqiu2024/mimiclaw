@@ -242,7 +242,29 @@
 
 #endif
 
-#define ESP_PANEL_BOARD_USE_TOUCH               (0)
+#define ESP_PANEL_BOARD_USE_TOUCH               (1)
+
+#if ESP_PANEL_BOARD_USE_TOUCH
+#define ESP_PANEL_BOARD_TOUCH_CONTROLLER        CST816S
+#define ESP_PANEL_BOARD_TOUCH_BUS_TYPE          (ESP_PANEL_BUS_TYPE_I2C)
+#define ESP_PANEL_BOARD_TOUCH_BUS_SKIP_INIT_HOST        (0)
+#define ESP_PANEL_BOARD_TOUCH_I2C_HOST_ID               (0)
+#if !ESP_PANEL_BOARD_TOUCH_BUS_SKIP_INIT_HOST
+#define ESP_PANEL_BOARD_TOUCH_I2C_CLK_HZ                (100 * 1000)
+#define ESP_PANEL_BOARD_TOUCH_I2C_SCL_PULLUP            (1)
+#define ESP_PANEL_BOARD_TOUCH_I2C_SDA_PULLUP            (1)
+#define ESP_PANEL_BOARD_TOUCH_I2C_IO_SCL                (1)
+#define ESP_PANEL_BOARD_TOUCH_I2C_IO_SDA                (2)
+#endif
+#define ESP_PANEL_BOARD_TOUCH_I2C_ADDRESS               (0)
+#define ESP_PANEL_BOARD_TOUCH_SWAP_XY                   (0)
+#define ESP_PANEL_BOARD_TOUCH_MIRROR_X                  (0)
+#define ESP_PANEL_BOARD_TOUCH_MIRROR_Y                  (0)
+#define ESP_PANEL_BOARD_TOUCH_RST_IO                    (-1)
+#define ESP_PANEL_BOARD_TOUCH_RST_LEVEL                 (0)
+#define ESP_PANEL_BOARD_TOUCH_INT_IO                    (10)
+#define ESP_PANEL_BOARD_TOUCH_INT_LEVEL                 (0)
+#endif
 
 #define ESP_PANEL_BOARD_USE_BACKLIGHT           (1)
 

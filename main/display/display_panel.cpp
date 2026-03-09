@@ -397,3 +397,84 @@ extern "C" uint16_t display_panel_get_reference_rotation_degrees(void)
 {
     return 270;
 }
+
+extern "C" bool display_panel_touch_is_ready(void)
+{
+    return (s_board != nullptr) && (s_board->getTouch() != nullptr);
+}
+
+extern "C" esp_err_t display_panel_touch_read_point(
+    uint16_t *x, uint16_t *y, uint16_t *strength, bool *pressed
+)
+{
+    Touch *touch = (s_board != nullptr) ? s_board->getTouch() : nullptr;
+    TouchPoint point = {};
+    int point_count = 0;
+
+    if (pressed == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *pressed = false;
+    if (x != nullptr) {
+        *x = 0;
+    }
+    if (y != nullptr) {
+        *y = 0;
+    }
+    if (strength != nullptr) {
+        *strength = 0;
+    }
+
+    if (touch == nullptr) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    point_count = touch->readPoints(&point, 1, 0);
+    if (point_count < 0) {
+        return ESP_FAIL;
+    }
+    if (point_count == 0) {
+        return ESP_OK;
+    }
+
+    if (x != nullptr) {
+        *x = (uint16_t)point.x;
+    }
+    if (y != nullptr) {
+        *y = (uint16_t)point.y;
+    }
+    if (strength != nullptr) {
+        *strength = (uint16_t)point.strength;
+    }
+    *pressed = true;
+
+    return ESP_OK;
+}
+
+extern "C" esp_err_t display_panel_touch_get_flags(
+    bool *swap_xy, bool *mirror_x, bool *mirror_y, bool *interrupt_enabled
+)
+{
+    Touch *touch = (s_board != nullptr) ? s_board->getTouch() : nullptr;
+
+    if (touch == nullptr) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    const auto &transformation = touch->getTransformation();
+    if (swap_xy != nullptr) {
+        *swap_xy = transformation.swap_xy;
+    }
+    if (mirror_x != nullptr) {
+        *mirror_x = transformation.mirror_x;
+    }
+    if (mirror_y != nullptr) {
+        *mirror_y = transformation.mirror_y;
+    }
+    if (interrupt_enabled != nullptr) {
+        *interrupt_enabled = touch->isInterruptEnabled();
+    }
+
+    return ESP_OK;
+}

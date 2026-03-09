@@ -28,6 +28,7 @@
 #include "skills/skill_loader.h"
 #include "display/display_panel.h"
 #include "ui/config_screen.h"
+#include "ui/touch_test_screen.h"
 
 static const char *TAG = "mimi";
 
@@ -42,6 +43,7 @@ static esp_err_t init_nvs(void)
     return ret;
 }
 
+#if !MIMI_TOUCH_TEST_MODE
 static esp_err_t init_spiffs(void)
 {
     esp_vfs_spiffs_conf_t conf = {
@@ -96,6 +98,7 @@ static void outbound_dispatch_task(void *arg)
         free(msg.content);
     }
 }
+#endif
 
 void app_main(void)
 {
@@ -115,20 +118,32 @@ void app_main(void)
     /* Input */
     button_Init();
 
-    /* Phase 1: Core infrastructure */
     ESP_ERROR_CHECK(init_nvs());
+    esp_err_t display_err = display_panel_init();
+
+    if (display_err != ESP_OK) {
+        ESP_LOGW(TAG, "Display init skipped: %s", esp_err_to_name(display_err));
+        return;
+    }
+
+#if MIMI_TOUCH_TEST_MODE
+    ESP_LOGW(TAG, "Touch test mode active; normal services are disabled");
+    if (touch_test_screen_init() != ESP_OK) {
+        ESP_LOGE(TAG, "Touch test screen init failed");
+        display_panel_show_boot();
+    }
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+#else
+    /* Phase 1: Core infrastructure */
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(init_spiffs());
 
-    esp_err_t display_err = display_panel_init();
-    if (display_err == ESP_OK) {
-        if (config_screen_init() == ESP_OK) {
-            config_screen_set_phase("CORE START");
-        } else {
-            display_panel_show_boot();
-        }
+    if (config_screen_init() == ESP_OK) {
+        config_screen_set_phase("CORE START");
     } else {
-        ESP_LOGW(TAG, "Display init skipped: %s", esp_err_to_name(display_err));
+        display_panel_show_boot();
     }
 
     // Init IMU after display, to avoid early GPIO47 takeover on EchoEar V1.2 LCD reset pin.
@@ -192,4 +207,5 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "MimiClaw ready. BLE CLI is available. Type 'help' after connecting.");
+#endif
 }

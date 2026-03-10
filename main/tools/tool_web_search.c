@@ -174,7 +174,7 @@ static esp_err_t search_via_proxy(const char *path, search_buf_t *sb)
     }
 
     /* Read full response */
-    char tmp[4096];
+    char tmp[1024];
     size_t total = 0;
     while (1) {
         int n = proxy_conn_read(conn, tmp, sizeof(tmp), 15000);

@@ -37,9 +37,9 @@
  *      - The number of buffers should be 1 or 2.
  */
 #define LVGL_PORT_BUFFER_MALLOC_CAPS            (MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)        // QSPI flush buffers must stay DMA-capable
-// #define LVGL_PORT_BUFFER_MALLOC_CAPS            (MALLOC_CAP_SPIRAM)      // Allocate LVGL buffer in PSRAM
-#define LVGL_PORT_BUFFER_SIZE_HEIGHT            (24)
-#define LVGL_PORT_BUFFER_NUM                    (2)
+// #define LVGL_PORT_BUFFER_MALLOC_CAPS            (MALLOC_CAP_SPIRAM)      // Not safe on the current QSPI path without an internal DMA staging buffer in flush_cb
+#define LVGL_PORT_BUFFER_SIZE_HEIGHT            (12)
+#define LVGL_PORT_BUFFER_NUM                    (1)
 
 /**
  * LVGL timer handle task related parameters, can be adjusted by users

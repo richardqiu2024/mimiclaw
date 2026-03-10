@@ -13,6 +13,7 @@ idf_component_register(
         "agent/agent_loop.c"
         "agent/context_builder.c"
         "memory/memory_store.c"
+        "memory/heap_utils.c"
         "memory/session_mgr.c"
         "gateway/ws_server.c"
         "cli/serial_cli.c"
@@ -30,7 +31,7 @@ idf_component_register(
         "display/display_panel.cpp"
         "display/lvgl_v8_port.cpp"
         "ui/config_screen.c"
-        "ui/touch_test_screen.c"
+        "ui/touch_calibration_screen.c"
     INCLUDE_DIRS
         "."
     REQUIRES

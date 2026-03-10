@@ -1,5 +1,6 @@
 #include "llm_proxy.h"
 #include "mimi_config.h"
+#include "memory/heap_utils.h"
 #include "proxy/http_proxy.h"
 
 #include <string.h>
@@ -96,7 +97,7 @@ typedef struct {
 
 static esp_err_t resp_buf_init(resp_buf_t *rb, size_t initial_cap)
 {
-    rb->data = heap_caps_calloc(1, initial_cap, MALLOC_CAP_SPIRAM);
+    rb->data = mimi_calloc_prefer_spiram(1, initial_cap);
     if (!rb->data) return ESP_ERR_NO_MEM;
     rb->len = 0;
     rb->cap = initial_cap;
@@ -107,7 +108,7 @@ static esp_err_t resp_buf_append(resp_buf_t *rb, const char *data, size_t len)
 {
     while (rb->len + len >= rb->cap) {
         size_t new_cap = rb->cap * 2;
-        char *tmp = heap_caps_realloc(rb->data, new_cap, MALLOC_CAP_SPIRAM);
+        char *tmp = mimi_realloc_prefer_spiram(rb->data, new_cap);
         if (!tmp) return ESP_ERR_NO_MEM;
         rb->data = tmp;
         rb->cap = new_cap;
@@ -383,7 +384,7 @@ static esp_err_t llm_http_via_proxy(const char *post_data, resp_buf_t *rb, int *
     }
 
     /* Read full response into buffer */
-    char tmp[4096];
+    char tmp[1024];
     while (1) {
         int n = proxy_conn_read(conn, tmp, sizeof(tmp), 120000);
         if (n <= 0) break;
@@ -651,8 +652,12 @@ esp_err_t llm_chat_tools(const char *system_prompt,
         }
     }
 
-    char *post_data = cJSON_PrintUnformatted(body);
+    char *post_data_tmp = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
+    if (!post_data_tmp) return ESP_ERR_NO_MEM;
+
+    char *post_data = mimi_strdup_prefer_spiram(post_data_tmp);
+    free(post_data_tmp);
     if (!post_data) return ESP_ERR_NO_MEM;
 
     ESP_LOGI(TAG, "Calling LLM API with tools (provider: %s, model: %s, body: %d bytes)",
@@ -733,7 +738,7 @@ esp_err_t llm_chat_tools(const char *system_prompt,
                                 strncpy(call->name, name->valuestring, sizeof(call->name) - 1);
                             }
                             if (args && cJSON_IsString(args)) {
-                                call->input = strdup(args->valuestring);
+                                call->input = mimi_strdup_prefer_spiram(args->valuestring);
                                 if (call->input) {
                                     call->input_len = strlen(call->input);
                                 }
@@ -772,7 +777,7 @@ esp_err_t llm_chat_tools(const char *system_prompt,
 
             /* Allocate and copy text */
             if (total_text > 0) {
-                resp->text = calloc(1, total_text + 1);
+                resp->text = mimi_calloc_prefer_spiram(1, total_text + 1);
                 if (resp->text) {
                     cJSON_ArrayForEach(block, content) {
                         cJSON *btype = cJSON_GetObjectItem(block, "type");
@@ -809,8 +814,11 @@ esp_err_t llm_chat_tools(const char *system_prompt,
                 if (input) {
                     char *input_str = cJSON_PrintUnformatted(input);
                     if (input_str) {
-                        call->input = input_str;
-                        call->input_len = strlen(input_str);
+                        call->input = mimi_strdup_prefer_spiram(input_str);
+                        free(input_str);
+                        if (call->input) {
+                            call->input_len = strlen(call->input);
+                        }
                     }
                 }
 

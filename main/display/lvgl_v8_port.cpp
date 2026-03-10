@@ -10,6 +10,7 @@
 #undef ESP_UTILS_LOG_TAG
 #define ESP_UTILS_LOG_TAG "LvPort"
 #include "esp_lib_utils.h"
+#include "display/display_panel.h"
 #include "lvgl_v8_port.h"
 
 using namespace esp_panel::drivers;
@@ -575,6 +576,11 @@ static lv_disp_t *display_init(LCD *lcd)
         assert(lvgl_buf[i]);
         ESP_UTILS_LOGD("Buffer[%d] address: %p, size: %d", i, lvgl_buf[i], buffer_size * sizeof(lv_color_t));
     }
+    ESP_UTILS_LOGI(
+        "LVGL draw buffers: count=%d, lines=%d, bytes_each=%u",
+        LVGL_PORT_BUFFER_NUM, LVGL_PORT_BUFFER_SIZE_HEIGHT,
+        (unsigned)(buffer_size * sizeof(lv_color_t))
+    );
 #else
     // To avoid the tearing effect, we should use at least two frame buffers: one for LVGL rendering and another for LCD refresh
     buffer_size = lcd_width * lcd_height;
@@ -641,24 +647,37 @@ static lv_disp_t *display_init(LCD *lcd)
 }
 
 static SemaphoreHandle_t touch_detected;
+static bool s_touch_last_pressed;
 
 static void touchpad_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
 {
     Touch *tp = (Touch *)indev_drv->user_data;
-    TouchPoint point;
+    uint16_t point_x = 0;
+    uint16_t point_y = 0;
+    uint16_t strength = 0;
+    bool pressed = false;
     data->state = LV_INDEV_STATE_RELEASED;
 
-    /* if we are interrupt driven wait for the ISR to fire */
-    if ( tp->isInterruptEnabled() && (xSemaphoreTake( touch_detected, 0 ) == pdFALSE) ) {
+    if (tp == nullptr) {
+        s_touch_last_pressed = false;
         return;
     }
 
-    /* Read data from touch controller */
-    int read_touch_result = tp->readPoints(&point, 1, 0);
-    if (read_touch_result > 0) {
-        data->point.x = point.x;
-        data->point.y = point.y;
+    // When the touch IRQ is available, stay interrupt-driven while idle.
+    // Only continue polling after a press so LVGL can observe the release edge.
+    if (tp->isInterruptEnabled() && (touch_detected != nullptr)) {
+        if ((xSemaphoreTake(touch_detected, 0) == pdFALSE) && !s_touch_last_pressed) {
+            return;
+        }
+    }
+
+    if (display_panel_touch_read_point(&point_x, &point_y, &strength, &pressed) == ESP_OK && pressed) {
+        data->point.x = point_x;
+        data->point.y = point_y;
         data->state = LV_INDEV_STATE_PRESSED;
+        s_touch_last_pressed = true;
+    } else {
+        s_touch_last_pressed = false;
     }
 }
 
@@ -679,7 +698,11 @@ static lv_indev_t *indev_init(Touch *tp)
 
     if (tp->isInterruptEnabled()) {
         touch_detected = xSemaphoreCreateBinary();
-        tp->attachInterruptCallback(onTouchInterruptCallback, tp);
+        if (touch_detected != nullptr) {
+            tp->attachInterruptCallback(onTouchInterruptCallback, tp);
+        } else {
+            ESP_UTILS_LOGW("Create touch semaphore failed, fallback to polling only");
+        }
     }
     ESP_UTILS_LOGD("Register input driver to LVGL");
     lv_indev_drv_init(&indev_drv_tp);

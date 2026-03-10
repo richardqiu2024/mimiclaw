@@ -11,8 +11,12 @@
 #include "cron/cron_service.h"
 #include "heartbeat/heartbeat.h"
 #include "skills/skill_loader.h"
+#include "display/display_panel.h"
+#include "ui/config_screen.h"
+#include "ui/touch_calibration_screen.h"
 
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -96,6 +100,202 @@ static void cli_arg_print_errors_impl(const struct arg_end *end, const char *pro
 #define fputs(s, stream) cli_fputs_impl((s), (stream))
 #define arg_print_errors(stream, end, progname) cli_arg_print_errors_impl((end), (progname))
 
+static const display_panel_touch_transform_t s_touch_transform_modes[] = {
+    DISPLAY_PANEL_TOUCH_TRANSFORM_MIRROR_XY,
+    DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY_MIRROR_X,
+    DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY,
+    DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY_MIRROR_Y,
+    DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY_MIRROR_XY,
+    DISPLAY_PANEL_TOUCH_TRANSFORM_NONE,
+    DISPLAY_PANEL_TOUCH_TRANSFORM_MIRROR_X,
+    DISPLAY_PANEL_TOUCH_TRANSFORM_MIRROR_Y,
+};
+
+static const char *touch_transform_mode_name(display_panel_touch_transform_t mode)
+{
+    switch (mode) {
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_NONE:
+        return "raw";
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY:
+        return "swap";
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY_MIRROR_X:
+        return "swap_mx";
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY_MIRROR_Y:
+        return "swap_my";
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY_MIRROR_XY:
+        return "swap_mxy";
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_MIRROR_X:
+        return "mx";
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_MIRROR_Y:
+        return "my";
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_MIRROR_XY:
+        return "mxy";
+    default:
+        return "unknown";
+    }
+}
+
+static bool touch_transform_mode_from_name(
+    const char *name, display_panel_touch_transform_t *mode
+)
+{
+    if ((name == NULL) || (mode == NULL)) {
+        return false;
+    }
+
+    if ((strcasecmp(name, "raw") == 0) || (strcasecmp(name, "none") == 0)) {
+        *mode = DISPLAY_PANEL_TOUCH_TRANSFORM_NONE;
+        return true;
+    }
+    if (strcasecmp(name, "swap") == 0) {
+        *mode = DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY;
+        return true;
+    }
+    if ((strcasecmp(name, "swap_mx") == 0) || (strcasecmp(name, "swap+mx") == 0)) {
+        *mode = DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY_MIRROR_X;
+        return true;
+    }
+    if ((strcasecmp(name, "swap_my") == 0) || (strcasecmp(name, "swap+my") == 0)) {
+        *mode = DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY_MIRROR_Y;
+        return true;
+    }
+    if ((strcasecmp(name, "swap_mxy") == 0) || (strcasecmp(name, "swap+mxy") == 0)) {
+        *mode = DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY_MIRROR_XY;
+        return true;
+    }
+    if ((strcasecmp(name, "mx") == 0) || (strcasecmp(name, "mirror_x") == 0)) {
+        *mode = DISPLAY_PANEL_TOUCH_TRANSFORM_MIRROR_X;
+        return true;
+    }
+    if ((strcasecmp(name, "my") == 0) || (strcasecmp(name, "mirror_y") == 0)) {
+        *mode = DISPLAY_PANEL_TOUCH_TRANSFORM_MIRROR_Y;
+        return true;
+    }
+    if ((strcasecmp(name, "mxy") == 0) || (strcasecmp(name, "mirror_xy") == 0)) {
+        *mode = DISPLAY_PANEL_TOUCH_TRANSFORM_MIRROR_XY;
+        return true;
+    }
+
+    return false;
+}
+
+static void print_touch_cal_usage(void)
+{
+    printf("Usage:\n");
+    printf("  touch_cal\n");
+    printf("  touch_cal show\n");
+    printf("  touch_cal dashboard\n");
+    printf("  touch_cal status\n");
+    printf("  touch_cal next\n");
+    printf("  touch_cal prev\n");
+    printf("  touch_cal mode <raw|swap|swap_mx|swap_my|swap_mxy|mx|my|mxy>\n");
+}
+
+static void print_touch_cal_status(void)
+{
+    printf("Touch ready: %s\n", display_panel_touch_is_ready() ? "yes" : "no");
+    printf(
+        "Touch calibration screen: %s\n",
+        touch_calibration_screen_is_active() ? "active" : "inactive"
+    );
+    printf(
+        "Touch transform mode: %s\n",
+        touch_transform_mode_name(display_panel_touch_get_transform_mode())
+    );
+}
+
+static int cmd_touch_cal(int argc, char **argv)
+{
+    esp_err_t err = ESP_OK;
+    display_panel_touch_transform_t mode = DISPLAY_PANEL_TOUCH_TRANSFORM_NONE;
+
+    if (argc <= 1 || (strcasecmp(argv[1], "show") == 0)) {
+        err = touch_calibration_screen_show();
+        if (err != ESP_OK) {
+            printf("Failed to open touch calibration screen: %s\n", esp_err_to_name(err));
+            return 1;
+        }
+        print_touch_cal_status();
+        return 0;
+    }
+
+    if (strcasecmp(argv[1], "dashboard") == 0) {
+        err = config_screen_init();
+        if (err != ESP_OK) {
+            printf("Failed to return to dashboard: %s\n", esp_err_to_name(err));
+            return 1;
+        }
+        print_touch_cal_status();
+        return 0;
+    }
+
+    if (strcasecmp(argv[1], "status") == 0) {
+        print_touch_cal_status();
+        return 0;
+    }
+
+    if ((strcasecmp(argv[1], "next") == 0) || (strcasecmp(argv[1], "prev") == 0)) {
+        size_t count = sizeof(s_touch_transform_modes) / sizeof(s_touch_transform_modes[0]);
+        display_panel_touch_transform_t current = display_panel_touch_get_transform_mode();
+        size_t current_index = 0;
+        int step = (strcasecmp(argv[1], "next") == 0) ? 1 : -1;
+
+        for (size_t i = 0; i < count; ++i) {
+            if (s_touch_transform_modes[i] == current) {
+                current_index = i;
+                break;
+            }
+        }
+
+        int next_index = (int)current_index + step;
+        if (next_index < 0) {
+            next_index = (int)count - 1;
+        } else if (next_index >= (int)count) {
+            next_index = 0;
+        }
+
+        err = display_panel_touch_set_transform_mode(s_touch_transform_modes[next_index]);
+        if (err != ESP_OK) {
+            printf("Failed to update touch transform mode: %s\n", esp_err_to_name(err));
+            return 1;
+        }
+
+        if (touch_calibration_screen_is_active()) {
+            (void)touch_calibration_screen_show();
+        }
+        print_touch_cal_status();
+        return 0;
+    }
+
+    if (strcasecmp(argv[1], "mode") == 0) {
+        if (argc < 3) {
+            print_touch_cal_usage();
+            return 1;
+        }
+
+        if (!touch_transform_mode_from_name(argv[2], &mode)) {
+            printf("Unknown mode: %s\n", argv[2]);
+            print_touch_cal_usage();
+            return 1;
+        }
+
+        err = display_panel_touch_set_transform_mode(mode);
+        if (err != ESP_OK) {
+            printf("Failed to set touch transform mode: %s\n", esp_err_to_name(err));
+            return 1;
+        }
+
+        if (touch_calibration_screen_is_active()) {
+            (void)touch_calibration_screen_show();
+        }
+        print_touch_cal_status();
+        return 0;
+    }
+
+    print_touch_cal_usage();
+    return 1;
+}
+
 static int cmd_help(int argc, char **argv)
 {
     (void)argc;
@@ -129,6 +329,7 @@ static int cmd_help(int argc, char **argv)
     printf("  config_reset\n");
     printf("  heartbeat_trigger\n");
     printf("  cron_start\n");
+    printf("  touch_cal [show|dashboard|status|next|prev|mode <name>]\n");
     printf("  tool_exec <name> [json]\n");
     printf("  restart\n");
     return 0;
@@ -1230,6 +1431,14 @@ esp_err_t serial_cli_init(void)
         .func = &cmd_cron_start,
     };
     esp_console_cmd_register(&cron_start_cmd);
+
+    /* touch_cal */
+    esp_console_cmd_t touch_cal_cmd = {
+        .command = "touch_cal",
+        .help = "Touch calibration UI and transform control",
+        .func = &cmd_touch_cal,
+    };
+    esp_console_cmd_register(&touch_cal_cmd);
 
     /* tool_exec */
     esp_console_cmd_t tool_exec_cmd = {

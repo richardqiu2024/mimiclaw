@@ -1,9 +1,11 @@
 #include "context_builder.h"
 #include "mimi_config.h"
+#include "memory/heap_utils.h"
 #include "memory/memory_store.h"
 #include "skills/skill_loader.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "esp_log.h"
 
@@ -69,26 +71,35 @@ esp_err_t context_build_system_prompt(char *buf, size_t size)
     off = append_file(buf, size, off, MIMI_SOUL_FILE, "Personality");
     off = append_file(buf, size, off, MIMI_USER_FILE, "User Info");
 
-    /* Long-term memory */
-    char mem_buf[4096];
-    if (memory_read_long_term(mem_buf, sizeof(mem_buf)) == ESP_OK && mem_buf[0]) {
-        off += snprintf(buf + off, size - off, "\n## Long-term Memory\n\n%s\n", mem_buf);
-    }
+    /* Long-term memory + recent notes: use heap scratch instead of task stack */
+    char *scratch_buf = mimi_calloc_prefer_spiram(1, 4096);
+    if (scratch_buf) {
+        if (memory_read_long_term(scratch_buf, 4096) == ESP_OK && scratch_buf[0]) {
+            off += snprintf(buf + off, size - off, "\n## Long-term Memory\n\n%s\n", scratch_buf);
+        }
 
-    /* Recent daily notes (last 3 days) */
-    char recent_buf[4096];
-    if (memory_read_recent(recent_buf, sizeof(recent_buf), 3) == ESP_OK && recent_buf[0]) {
-        off += snprintf(buf + off, size - off, "\n## Recent Notes\n\n%s\n", recent_buf);
+        scratch_buf[0] = '\0';
+        if (memory_read_recent(scratch_buf, 4096, 3) == ESP_OK && scratch_buf[0]) {
+            off += snprintf(buf + off, size - off, "\n## Recent Notes\n\n%s\n", scratch_buf);
+        }
+        free(scratch_buf);
+    } else {
+        ESP_LOGW(TAG, "Failed to allocate scratch buffer for memory sections");
     }
 
     /* Skills */
-    char skills_buf[2048];
-    size_t skills_len = skill_loader_build_summary(skills_buf, sizeof(skills_buf));
-    if (skills_len > 0) {
-        off += snprintf(buf + off, size - off,
-            "\n## Available Skills\n\n"
-            "Available skills (use read_file to load full instructions):\n%s\n",
-            skills_buf);
+    char *skills_buf = mimi_calloc_prefer_spiram(1, 2048);
+    if (skills_buf) {
+        size_t skills_len = skill_loader_build_summary(skills_buf, 2048);
+        if (skills_len > 0) {
+            off += snprintf(buf + off, size - off,
+                "\n## Available Skills\n\n"
+                "Available skills (use read_file to load full instructions):\n%s\n",
+                skills_buf);
+        }
+        free(skills_buf);
+    } else {
+        ESP_LOGW(TAG, "Failed to allocate skills summary buffer");
     }
 
     ESP_LOGI(TAG, "System prompt built: %d bytes", (int)off);

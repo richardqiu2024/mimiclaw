@@ -36,12 +36,133 @@ static echoear_config_t s_echoear_config = {
 };
 static bool s_ready = false;
 static bool s_lvgl_ready = false;
+static lv_disp_rot_t s_current_rotation = LV_DISP_ROT_NONE;
+static display_panel_touch_transform_t s_touch_transform_mode =
+    DISPLAY_PANEL_TOUCH_TRANSFORM_MIRROR_XY;
+static constexpr int kFillBufferMaxLines = 8;
 
 static lv_disp_rot_t get_reference_rotation(void)
 {
     // Validated upright display-space baseline for the EchoEar 360x360 round panel.
     // Future LVGL screens should inherit this instead of assuming LV_DISP_ROT_NONE.
     return LV_DISP_ROT_270;
+}
+
+static uint16_t rotation_to_degrees(lv_disp_rot_t rotation)
+{
+    switch (rotation) {
+    case LV_DISP_ROT_90:
+        return 90;
+    case LV_DISP_ROT_180:
+        return 180;
+    case LV_DISP_ROT_270:
+        return 270;
+    case LV_DISP_ROT_NONE:
+    default:
+        return 0;
+    }
+}
+
+static bool rotation_from_degrees(uint16_t degrees, lv_disp_rot_t *rotation)
+{
+    if (rotation == nullptr) {
+        return false;
+    }
+
+    switch (degrees) {
+    case 0:
+        *rotation = LV_DISP_ROT_NONE;
+        return true;
+    case 90:
+        *rotation = LV_DISP_ROT_90;
+        return true;
+    case 180:
+        *rotation = LV_DISP_ROT_180;
+        return true;
+    case 270:
+        *rotation = LV_DISP_ROT_270;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void apply_touch_screen_correction(uint16_t *x, uint16_t *y)
+{
+    if ((x == nullptr) || (y == nullptr) || (s_lcd == nullptr)) {
+        return;
+    }
+
+    uint16_t point_x = *x;
+    uint16_t point_y = *y;
+    uint16_t max_x = (uint16_t)(s_lcd->getFrameWidth() - 1);
+    uint16_t max_y = (uint16_t)(s_lcd->getFrameHeight() - 1);
+    bool swap_xy = false;
+    bool mirror_x = false;
+    bool mirror_y = false;
+
+    switch (s_touch_transform_mode) {
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_NONE:
+        break;
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY:
+        swap_xy = true;
+        break;
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY_MIRROR_X:
+        swap_xy = true;
+        mirror_x = true;
+        break;
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY_MIRROR_Y:
+        swap_xy = true;
+        mirror_y = true;
+        break;
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY_MIRROR_XY:
+        swap_xy = true;
+        mirror_x = true;
+        mirror_y = true;
+        break;
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_MIRROR_X:
+        mirror_x = true;
+        break;
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_MIRROR_Y:
+        mirror_y = true;
+        break;
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_MIRROR_XY:
+        mirror_x = true;
+        mirror_y = true;
+        break;
+    default:
+        ESP_LOGW(TAG, "Unknown touch transform mode: %d", (int)s_touch_transform_mode);
+        break;
+    }
+
+    if (point_x > max_x) {
+        point_x = max_x;
+    }
+    if (point_y > max_y) {
+        point_y = max_y;
+    }
+
+    // Apply the final board-specific screen-space correction after the touch
+    // controller has already been aligned to the display rotation.
+    if (swap_xy) {
+        uint16_t tmp = point_x;
+        point_x = point_y;
+        point_y = tmp;
+
+        uint16_t tmp_max = max_x;
+        max_x = max_y;
+        max_y = tmp_max;
+    }
+
+    if (mirror_x) {
+        point_x = (uint16_t)(max_x - point_x);
+    }
+    if (mirror_y) {
+        point_y = (uint16_t)(max_y - point_y);
+    }
+
+    *x = point_x;
+    *y = point_y;
 }
 
 static void sync_touch_to_display_rotation(lv_disp_rot_t rotation)
@@ -99,6 +220,20 @@ static void sync_touch_to_display_rotation(lv_disp_rot_t rotation)
         TAG, "Touch aligned to display rotation=%d -> swap=%d mirror_x=%d mirror_y=%d",
         (int)rotation, swap_xy, mirror_x, mirror_y
     );
+}
+
+static esp_err_t apply_rotation_locked(lv_disp_rot_t rotation)
+{
+    lv_disp_t *display = lv_disp_get_default();
+    if (display == nullptr) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    lv_disp_set_rotation(display, rotation);
+    sync_touch_to_display_rotation(rotation);
+    s_current_rotation = rotation;
+    ESP_LOGI(TAG, "Display rotation applied: %u degrees", rotation_to_degrees(rotation));
+    return ESP_OK;
 }
 
 static void configure_echoear_display_power(void)
@@ -185,6 +320,9 @@ static void reset_lcd_by_gpio(const echoear_config_t *cfg)
 
 static esp_err_t alloc_fill_buffer(void)
 {
+    if (s_fill_buffer != nullptr && s_fill_buffer_lines > 0) {
+        return ESP_OK;
+    }
     if (!s_lcd) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -197,12 +335,16 @@ static esp_err_t alloc_fill_buffer(void)
     }
 
     // SPI panel IO requires DMA-capable source buffers.
-    int lines = (height < 32) ? height : 32;
+    // Keep this boot/logo buffer intentionally small because it is only used
+    // for direct panel drawing before LVGL takes over.
+    int lines = (height < kFillBufferMaxLines) ? height : kFillBufferMaxLines;
     while (lines > 0) {
         size_t bytes = (size_t)width * (size_t)lines * sizeof(uint16_t);
         s_fill_buffer = (uint16_t *)heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
         if (s_fill_buffer) {
             s_fill_buffer_lines = lines;
+            ESP_LOGI(TAG, "Allocated boot DMA fill buffer: %u bytes (%d lines)",
+                     (unsigned)bytes, lines);
             return ESP_OK;
         }
         lines /= 2;
@@ -212,6 +354,16 @@ static esp_err_t alloc_fill_buffer(void)
     return ESP_ERR_NO_MEM;
 }
 
+static void free_fill_buffer(void)
+{
+    if (s_fill_buffer != nullptr) {
+        heap_caps_free(s_fill_buffer);
+        s_fill_buffer = nullptr;
+        s_fill_buffer_lines = 0;
+        ESP_LOGI(TAG, "Released boot DMA fill buffer");
+    }
+}
+
 static inline uint16_t rgb565_to_panel_bytes(uint16_t color)
 {
     return (uint16_t)((color << 8) | (color >> 8));
@@ -219,12 +371,15 @@ static inline uint16_t rgb565_to_panel_bytes(uint16_t color)
 
 static esp_err_t display_panel_fill_rect_rgb565(int x_start, int y_start, int width, int height, uint16_t color)
 {
-    if (!s_ready || !s_lcd || !s_fill_buffer || (s_fill_buffer_lines <= 0)) {
+    if (!s_ready || !s_lcd) {
         return ESP_ERR_INVALID_STATE;
     }
-
     if ((width <= 0) || (height <= 0)) {
         return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = alloc_fill_buffer();
+    if (err != ESP_OK) {
+        return err;
     }
 
     uint16_t panel_color = rgb565_to_panel_bytes(color);
@@ -251,11 +406,15 @@ static esp_err_t display_panel_draw_rgb565_bitmap_reference_scaled(
     int x_start, int y_start, int src_width, int src_height, int scale, const uint16_t *bitmap
 )
 {
-    if (!s_ready || !s_lcd || !s_fill_buffer || (s_fill_buffer_lines <= 0) || (bitmap == nullptr)) {
+    if (!s_ready || !s_lcd || (bitmap == nullptr)) {
         return ESP_ERR_INVALID_STATE;
     }
     if ((src_width <= 0) || (src_height <= 0) || (scale <= 0)) {
         return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = alloc_fill_buffer();
+    if (err != ESP_OK) {
+        return err;
     }
 
     int dst_width = src_height * scale;
@@ -335,15 +494,6 @@ extern "C" esp_err_t display_panel_init(void)
     s_board = board;
     s_lcd = lcd;
 
-    esp_err_t err = alloc_fill_buffer();
-    if (err != ESP_OK) {
-        s_board->del();
-        delete s_board;
-        s_board = nullptr;
-        s_lcd = nullptr;
-        return err;
-    }
-
     auto backlight = s_board->getBacklight();
     if (backlight) {
         if (!backlight->setBrightness(100)) {
@@ -376,18 +526,20 @@ extern "C" esp_err_t display_panel_init_lvgl(void)
         return ESP_FAIL;
     }
 
+    free_fill_buffer();
     s_lvgl_ready = true;
     if (display_panel_lvgl_lock(1000)) {
-        lv_disp_t *display = lv_disp_get_default();
         lv_disp_rot_t rotation = get_reference_rotation();
-        if (display != nullptr) {
-            lv_disp_set_rotation(display, rotation);
-        }
-        sync_touch_to_display_rotation(rotation);
+        (void)apply_rotation_locked(rotation);
         display_panel_lvgl_unlock();
     } else {
         ESP_LOGW(TAG, "LVGL lock timeout, skip applying reference rotation");
     }
+    ESP_LOGI(
+        TAG, "LVGL initialized, internal free=%u largest=%u",
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)
+    );
     ESP_LOGI(TAG, "LVGL initialized");
     return ESP_OK;
 }
@@ -458,12 +610,59 @@ extern "C" bool display_panel_is_ready(void)
 
 extern "C" uint16_t display_panel_get_reference_rotation_degrees(void)
 {
-    return 270;
+    return rotation_to_degrees(get_reference_rotation());
+}
+
+extern "C" uint16_t display_panel_get_rotation_degrees(void)
+{
+    return rotation_to_degrees(s_current_rotation);
+}
+
+extern "C" esp_err_t display_panel_set_rotation_degrees(uint16_t degrees)
+{
+    lv_disp_rot_t rotation = LV_DISP_ROT_NONE;
+    if (!s_lvgl_ready) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!rotation_from_degrees(degrees, &rotation)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!display_panel_lvgl_lock(1000)) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    esp_err_t err = apply_rotation_locked(rotation);
+    display_panel_lvgl_unlock();
+    return err;
 }
 
 extern "C" bool display_panel_touch_is_ready(void)
 {
     return (s_board != nullptr) && (s_board->getTouch() != nullptr);
+}
+
+extern "C" display_panel_touch_transform_t display_panel_touch_get_transform_mode(void)
+{
+    return s_touch_transform_mode;
+}
+
+extern "C" esp_err_t display_panel_touch_set_transform_mode(display_panel_touch_transform_t mode)
+{
+    switch (mode) {
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_NONE:
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY:
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY_MIRROR_X:
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY_MIRROR_Y:
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_SWAP_XY_MIRROR_XY:
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_MIRROR_X:
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_MIRROR_Y:
+    case DISPLAY_PANEL_TOUCH_TRANSFORM_MIRROR_XY:
+        s_touch_transform_mode = mode;
+        ESP_LOGI(TAG, "Touch transform mode set to %d", (int)mode);
+        return ESP_OK;
+    default:
+        return ESP_ERR_INVALID_ARG;
+    }
 }
 
 extern "C" esp_err_t display_panel_touch_read_point(
@@ -506,6 +705,9 @@ extern "C" esp_err_t display_panel_touch_read_point(
     }
     if (y != nullptr) {
         *y = (uint16_t)point.y;
+    }
+    if ((x != nullptr) && (y != nullptr)) {
+        apply_touch_screen_correction(x, y);
     }
     if (strength != nullptr) {
         *strength = (uint16_t)point.strength;

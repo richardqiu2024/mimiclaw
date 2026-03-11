@@ -7,10 +7,12 @@
 #include "freertos/FreeRTOS.h"
 
 #include "esp_timer.h"
+#include "driver/gpio.h"
 #undef ESP_UTILS_LOG_TAG
 #define ESP_UTILS_LOG_TAG "LvPort"
 #include "esp_lib_utils.h"
 #include "display/display_panel.h"
+#include "hardware/echoear_config.h"
 #include "lvgl_v8_port.h"
 
 using namespace esp_panel::drivers;
@@ -666,8 +668,14 @@ static void touchpad_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
     // When the touch IRQ is available, stay interrupt-driven while idle.
     // Only continue polling after a press so LVGL can observe the release edge.
     if (tp->isInterruptEnabled() && (touch_detected != nullptr)) {
-        if ((xSemaphoreTake(touch_detected, 0) == pdFALSE) && !s_touch_last_pressed) {
-            return;
+        bool irq_pending = (xSemaphoreTake(touch_detected, 0) == pdTRUE);
+        bool irq_level_active =
+            (gpio_get_level(ECHOEAR_TOUCH_INT) == ECHOEAR_TOUCH_INT_ACTIVE_LEVEL);
+
+        if (!irq_pending && !s_touch_last_pressed) {
+            if (!irq_level_active) {
+                return;
+            }
         }
     }
 

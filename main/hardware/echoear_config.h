@@ -97,6 +97,7 @@
 #define ECHOEAR_TOUCH_I2C_NUM               I2C_NUM_0   // Shared with audio
 #define ECHOEAR_TOUCH_I2C_ADDR              0x15
 #define ECHOEAR_TOUCH_INT                   GPIO_NUM_10
+#define ECHOEAR_TOUCH_INT_ACTIVE_LEVEL      0
 #define ECHOEAR_TOUCH_RST                   GPIO_NUM_NC
 
 // =============================================================================

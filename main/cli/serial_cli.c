@@ -6,6 +6,10 @@
 #include "memory/memory_store.h"
 #include "memory/session_mgr.h"
 #include "proxy/http_proxy.h"
+#include "hardware/echoear_config.h"
+#include "hardware/echoear_i2c_debug.h"
+#include "imu/bmi270_driver.h"
+#include "audio/audio_i2c_debug.h"
 #include "tools/tool_registry.h"
 #include "tools/tool_sdcard.h"
 #include "tools/tool_web_search.h"
@@ -28,6 +32,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <lwip/inet.h>
+#include "freertos/FreeRTOS.h"
 #include "esp_log.h"
 #include "esp_console.h"
 #include "esp_system.h"
@@ -35,6 +40,7 @@
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "driver/i2c.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "argtable3/argtable3.h"
@@ -46,6 +52,7 @@ static serial_cli_output_cb_t s_output_cb = NULL;
 static void *s_output_ctx = NULL;
 
 #define TOOL_DEBUG_OUTPUT_SIZE ((32 * 1024) + 1)
+#define CLI_I2C_DEBUG_PORT ECHOEAR_DETECT_I2C_NUM
 
 static void cli_write_raw(const char *data, size_t len)
 {
@@ -626,6 +633,10 @@ static int cmd_help(int argc, char **argv)
     printf("  session_list\n");
     printf("  session_clear <chat_id>\n");
     printf("  heap_info\n");
+    printf("  i2c_scan\n");
+    printf("  bmi270_probe\n");
+    printf("  es8311_probe\n");
+    printf("  es7210_probe\n");
     printf("  sd_status\n");
     printf("  sd_mount\n");
     printf("  set_search_key <key>\n");
@@ -955,6 +966,126 @@ static int cmd_heap_info(int argc, char **argv)
     printf("Total free:    %d bytes\n",
            (int)esp_get_free_heap_size());
     return 0;
+}
+
+static const char *cli_i2c_known_device_name(uint8_t address)
+{
+    switch (address) {
+    case ECHOEAR_TOUCH_I2C_ADDR:
+        return "CST816 touch";
+    case ECHOEAR_ES8311_ADDR:
+        return "ES8311 codec";
+    case ECHOEAR_ES7210_ADDR:
+        return "ES7210 mic ADC";
+    case BMI270_I2C_ADDR_LOW:
+    case BMI270_I2C_ADDR_HIGH:
+        return "BMI270 candidate";
+    default:
+        return NULL;
+    }
+}
+
+static int cmd_i2c_scan(int argc, char **argv)
+{
+    bool installed_here = false;
+    int found = 0;
+    esp_err_t err;
+    (void)argc;
+    (void)argv;
+
+    err = echoear_codec_power_enable();
+    if (err != ESP_OK) {
+        printf("Codec power enable failed: %s\n", esp_err_to_name(err));
+    }
+
+    err = echoear_i2c_debug_open(&installed_here);
+    if (err != ESP_OK) {
+        printf("I2C debug bus open failed: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+
+    printf(
+        "Scanning shared I2C bus via I2C%d on SDA=GPIO%d SCL=GPIO%d\n",
+        CLI_I2C_DEBUG_PORT, (int)ECHOEAR_AUDIO_I2C_SDA, (int)ECHOEAR_AUDIO_I2C_SCL
+    );
+    printf("     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n");
+    for (int row = 0; row < 128; row += 16) {
+        printf("%02x: ", row);
+        for (int col = 0; col < 16; ++col) {
+            uint8_t address = (uint8_t)(row + col);
+            if (address < 0x03 || address > 0x77) {
+                printf("   ");
+                continue;
+            }
+
+            err = echoear_i2c_debug_probe(address, 50);
+            if (err == ESP_OK) {
+                printf("%02x ", address);
+                found++;
+            } else if (err == ESP_ERR_TIMEOUT) {
+                printf("UU ");
+            } else {
+                printf("-- ");
+            }
+        }
+        printf("\n");
+    }
+
+    if (found == 0) {
+        printf("No I2C devices responded.\n");
+    } else {
+        printf("Found %d device(s).\n", found);
+        for (uint8_t address = 0x03; address <= 0x77; ++address) {
+            const char *name;
+            err = echoear_i2c_debug_probe(address, 50);
+            if (err != ESP_OK) {
+                continue;
+            }
+            name = cli_i2c_known_device_name(address);
+            if (name != NULL) {
+                printf("  0x%02x -> %s\n", address, name);
+            }
+        }
+    }
+
+    echoear_i2c_debug_close(installed_here);
+    return 0;
+}
+
+static int cmd_bmi270_probe(int argc, char **argv)
+{
+    char status[192];
+    esp_err_t err;
+    (void)argc;
+    (void)argv;
+
+    err = bmi270_format_status(status, sizeof(status));
+    printf("%s\n", status);
+    return err == ESP_OK ? 0 : 1;
+}
+
+static int cmd_es8311_probe(int argc, char **argv)
+{
+    char status[224];
+    esp_err_t err;
+    (void)argc;
+    (void)argv;
+
+    err = es8311_format_status(status, sizeof(status));
+    printf("%s\n", status);
+    return err == ESP_OK ? 0 : 1;
+}
+
+static int cmd_es7210_probe(int argc, char **argv)
+{
+    char status[224];
+    esp_err_t err;
+    (void)argc;
+    (void)argv;
+
+    err = es7210_format_status(status, sizeof(status));
+    printf("%s\n", status);
+    return err == ESP_OK ? 0 : 1;
 }
 
 static int cmd_sd_status(int argc, char **argv)
@@ -1975,6 +2106,38 @@ esp_err_t serial_cli_init(void)
         .func = &cmd_heap_info,
     };
     esp_console_cmd_register(&heap_cmd);
+
+    /* i2c_scan */
+    esp_console_cmd_t i2c_scan_cmd = {
+        .command = "i2c_scan",
+        .help = "Scan the shared I2C bus (GPIO2/GPIO1) for responsive device addresses",
+        .func = &cmd_i2c_scan,
+    };
+    esp_console_cmd_register(&i2c_scan_cmd);
+
+    /* bmi270_probe */
+    esp_console_cmd_t bmi270_probe_cmd = {
+        .command = "bmi270_probe",
+        .help = "Probe BMI270 at 0x68/0x69 and read chip ID",
+        .func = &cmd_bmi270_probe,
+    };
+    esp_console_cmd_register(&bmi270_probe_cmd);
+
+    /* es8311_probe */
+    esp_console_cmd_t es8311_probe_cmd = {
+        .command = "es8311_probe",
+        .help = "Probe the ES8311 speaker codec at 0x18 and read a small register snapshot",
+        .func = &cmd_es8311_probe,
+    };
+    esp_console_cmd_register(&es8311_probe_cmd);
+
+    /* es7210_probe */
+    esp_console_cmd_t es7210_probe_cmd = {
+        .command = "es7210_probe",
+        .help = "Probe the ES7210 mic ADC at 0x40 and read a small register snapshot",
+        .func = &cmd_es7210_probe,
+    };
+    esp_console_cmd_register(&es7210_probe_cmd);
 
     /* sd_status */
     esp_console_cmd_t sd_status_cmd = {

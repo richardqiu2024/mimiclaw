@@ -2,6 +2,7 @@
 #include "tools/tool_web_search.h"
 #include "tools/tool_get_time.h"
 #include "tools/tool_files.h"
+#include "tools/tool_hardware_status.h"
 #include "tools/tool_sdcard.h"
 #include "tools/tool_cron.h"
 
@@ -157,6 +158,42 @@ esp_err_t tool_registry_init(void)
         .execute = tool_list_sd_dir_execute,
     };
     register_tool(&lsd);
+
+    /* Register bmi270_status */
+    mimi_tool_t bs = {
+        .name = "bmi270_status",
+        .description = "Check the BMI270 IMU on the shared I2C bus and read its chip ID.",
+        .input_schema_json =
+            "{\"type\":\"object\","
+            "\"properties\":{},"
+            "\"required\":[]}",
+        .execute = tool_bmi270_status_execute,
+    };
+    register_tool(&bs);
+
+    /* Register codec_status */
+    mimi_tool_t cs = {
+        .name = "codec_status",
+        .description = "Check the ES8311 speaker codec on the shared I2C bus and read a small register snapshot.",
+        .input_schema_json =
+            "{\"type\":\"object\","
+            "\"properties\":{},"
+            "\"required\":[]}",
+        .execute = tool_codec_status_execute,
+    };
+    register_tool(&cs);
+
+    /* Register mic_adc_status */
+    mimi_tool_t ms = {
+        .name = "mic_adc_status",
+        .description = "Check the ES7210 microphone ADC on the shared I2C bus and read a small register snapshot.",
+        .input_schema_json =
+            "{\"type\":\"object\","
+            "\"properties\":{},"
+            "\"required\":[]}",
+        .execute = tool_mic_adc_status_execute,
+    };
+    register_tool(&ms);
 
     /* Register cron_add */
     mimi_tool_t ca = {

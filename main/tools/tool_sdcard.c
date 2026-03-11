@@ -6,7 +6,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 
 #include "cJSON.h"
 #include "esp_log.h"
@@ -35,8 +34,6 @@ bool tool_sdcard_is_mounted(void)
 
 esp_err_t tool_sdcard_get_status(char *output, size_t output_size)
 {
-    struct statvfs vfs = { 0 };
-
     if ((output == NULL) || (output_size == 0)) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -46,36 +43,30 @@ esp_err_t tool_sdcard_get_status(char *output, size_t output_size)
         return ESP_ERR_NOT_FOUND;
     }
 
-    if (statvfs(TOOL_SDCARD_BASE, &vfs) != 0) {
-        snprintf(
-            output, output_size,
-            "mounted: yes\npath: %s\nfs_stats: unavailable\ncard_handle: %s\n",
-            TOOL_SDCARD_BASE, (s_sdcard_card != NULL) ? "yes" : "no"
-        );
-        return ESP_FAIL;
-    }
-
     {
-        uint64_t block_size = (uint64_t)((vfs.f_frsize != 0) ? vfs.f_frsize : vfs.f_bsize);
-        uint64_t total_bytes = block_size * (uint64_t)vfs.f_blocks;
-        uint64_t free_bytes = block_size * (uint64_t)vfs.f_bavail;
-        uint64_t used_bytes = (total_bytes >= free_bytes) ? (total_bytes - free_bytes) : 0;
+        DIR *dir = opendir(TOOL_SDCARD_BASE);
+        struct dirent *ent = NULL;
+        int entry_count = 0;
+
+        if (dir != NULL) {
+            while ((ent = readdir(dir)) != NULL) {
+                if ((strcmp(ent->d_name, ".") == 0) || (strcmp(ent->d_name, "..") == 0)) {
+                    continue;
+                }
+                entry_count++;
+            }
+            closedir(dir);
+        }
 
         snprintf(
             output, output_size,
             "mounted: yes\n"
             "path: %s\n"
             "card_handle: %s\n"
-            "block_size: %llu\n"
-            "total_bytes: %llu\n"
-            "used_bytes: %llu\n"
-            "free_bytes: %llu\n",
+            "root_entries: %d\n",
             TOOL_SDCARD_BASE,
             (s_sdcard_card != NULL) ? "yes" : "no",
-            (unsigned long long)block_size,
-            (unsigned long long)total_bytes,
-            (unsigned long long)used_bytes,
-            (unsigned long long)free_bytes
+            entry_count
         );
     }
 

@@ -2,6 +2,7 @@
 #include "tools/tool_web_search.h"
 #include "tools/tool_get_time.h"
 #include "tools/tool_files.h"
+#include "tools/tool_sdcard.h"
 #include "tools/tool_cron.h"
 
 #include <string.h>
@@ -10,7 +11,7 @@
 
 static const char *TAG = "tools";
 
-#define MAX_TOOLS 12
+#define MAX_TOOLS 16
 
 static mimi_tool_t s_tools[MAX_TOOLS];
 static int s_tool_count = 0;
@@ -130,6 +131,32 @@ esp_err_t tool_registry_init(void)
         .execute = tool_list_dir_execute,
     };
     register_tool(&ld);
+
+    /* Register read_sd_file */
+    mimi_tool_t rsf = {
+        .name = "read_sd_file",
+        .description = "Read a file from the SD card. Path must start with /sdcard/. The system auto-mounts the card on demand.",
+        .input_schema_json =
+            "{\"type\":\"object\","
+            "\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute file path starting with /sdcard/\"},"
+            "\"offset\":{\"type\":\"integer\",\"description\":\"Optional byte offset to start reading from\"},"
+            "\"max_bytes\":{\"type\":\"integer\",\"description\":\"Optional max bytes to read from the file\"}},"
+            "\"required\":[\"path\"]}",
+        .execute = tool_read_sd_file_execute,
+    };
+    register_tool(&rsf);
+
+    /* Register list_sd_dir */
+    mimi_tool_t lsd = {
+        .name = "list_sd_dir",
+        .description = "List one directory from the SD card. Path must start with /sdcard/. The system auto-mounts the card on demand.",
+        .input_schema_json =
+            "{\"type\":\"object\","
+            "\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Optional directory path starting with /sdcard/ (default: /sdcard)\"}},"
+            "\"required\":[]}",
+        .execute = tool_list_sd_dir_execute,
+    };
+    register_tool(&lsd);
 
     /* Register cron_add */
     mimi_tool_t ca = {

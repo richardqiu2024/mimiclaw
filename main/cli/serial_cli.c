@@ -7,6 +7,7 @@
 #include "memory/session_mgr.h"
 #include "proxy/http_proxy.h"
 #include "tools/tool_registry.h"
+#include "tools/tool_sdcard.h"
 #include "tools/tool_web_search.h"
 #include "cron/cron_service.h"
 #include "heartbeat/heartbeat.h"
@@ -30,17 +31,21 @@
 #include "esp_log.h"
 #include "esp_console.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "argtable3/argtable3.h"
+#include "cJSON.h"
 
 static const char *TAG = "cli";
 static bool s_cli_initialized = false;
 static serial_cli_output_cb_t s_output_cb = NULL;
 static void *s_output_ctx = NULL;
+
+#define TOOL_DEBUG_OUTPUT_SIZE ((32 * 1024) + 1)
 
 static void cli_write_raw(const char *data, size_t len)
 {
@@ -99,6 +104,305 @@ static void cli_arg_print_errors_impl(const struct arg_end *end, const char *pro
 #define printf(...) cli_printf_impl(__VA_ARGS__)
 #define fputs(s, stream) cli_fputs_impl((s), (stream))
 #define arg_print_errors(stream, end, progname) cli_arg_print_errors_impl((end), (progname))
+
+static bool json_number_literal_valid(const char *text)
+{
+    char *end = NULL;
+
+    if ((text == NULL) || (text[0] == '\0')) {
+        return false;
+    }
+
+    (void)strtod(text, &end);
+    return (end != NULL) && (*end == '\0');
+}
+
+static char *copy_trimmed_span(const char *start, const char *end)
+{
+    while ((start < end) && isspace((unsigned char)*start)) {
+        start++;
+    }
+    while ((end > start) && isspace((unsigned char)*(end - 1))) {
+        end--;
+    }
+
+    size_t len = (size_t)(end - start);
+    char *copy = calloc(1, len + 1);
+    if (copy == NULL) {
+        return NULL;
+    }
+
+    if (len > 0) {
+        memcpy(copy, start, len);
+    }
+    copy[len] = '\0';
+    return copy;
+}
+
+static char *dup_trimmed_text(const char *text)
+{
+    if (text == NULL) {
+        return NULL;
+    }
+
+    return copy_trimmed_span(text, text + strlen(text));
+}
+
+static void strip_matching_outer_quotes(char *text)
+{
+    if (text == NULL) {
+        return;
+    }
+
+    while (true) {
+        size_t len = strlen(text);
+
+        if (len < 2) {
+            return;
+        }
+
+        if (((text[0] == '\'') || (text[0] == '"')) && (text[len - 1] == text[0])) {
+            memmove(text, text + 1, len - 2);
+            text[len - 2] = '\0';
+            continue;
+        }
+
+        return;
+    }
+}
+
+static char *normalize_json_text(const char *text)
+{
+    cJSON *root = NULL;
+    char *normalized = NULL;
+
+    if ((text == NULL) || (text[0] == '\0')) {
+        return NULL;
+    }
+
+    root = cJSON_Parse(text);
+    if (root == NULL) {
+        return NULL;
+    }
+
+    if (cJSON_IsString(root)) {
+        const char *inner = cJSON_GetStringValue(root);
+        char *trimmed_inner = dup_trimmed_text(inner);
+
+        if ((trimmed_inner != NULL) && (trimmed_inner[0] != '\0')) {
+            cJSON *inner_root = cJSON_Parse(trimmed_inner);
+            if (inner_root != NULL) {
+                normalized = cJSON_PrintUnformatted(inner_root);
+                cJSON_Delete(inner_root);
+                free(trimmed_inner);
+                cJSON_Delete(root);
+                return normalized;
+            }
+        }
+
+        free(trimmed_inner);
+    }
+
+    normalized = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return normalized;
+}
+
+static char *decode_wrapped_json_string(const char *text)
+{
+    size_t len = 0;
+    char *wrapped = NULL;
+    char *normalized = NULL;
+
+    if ((text == NULL) || (text[0] == '\0')) {
+        return NULL;
+    }
+
+    len = strlen(text);
+    wrapped = calloc(1, len + 3);
+    if (wrapped == NULL) {
+        return NULL;
+    }
+
+    wrapped[0] = '"';
+    memcpy(wrapped + 1, text, len);
+    wrapped[len + 1] = '"';
+    wrapped[len + 2] = '\0';
+
+    normalized = normalize_json_text(wrapped);
+    free(wrapped);
+    return normalized;
+}
+
+static char *normalize_relaxed_tool_json(const char *input)
+{
+    const char *cursor = input;
+    const char *body_end = NULL;
+    cJSON *root = NULL;
+    char *normalized = NULL;
+
+    if (input == NULL) {
+        return NULL;
+    }
+
+    while (*cursor && isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != '{') {
+        return NULL;
+    }
+
+    body_end = cursor + strlen(cursor);
+    while ((body_end > cursor) && isspace((unsigned char)*(body_end - 1))) {
+        body_end--;
+    }
+    if ((body_end <= cursor) || (*(body_end - 1) != '}')) {
+        return NULL;
+    }
+
+    root = cJSON_CreateObject();
+    if (root == NULL) {
+        return NULL;
+    }
+
+    cursor++;
+    body_end--;
+
+    while (cursor < body_end) {
+        const char *key_start = NULL;
+        const char *colon = NULL;
+        const char *value_end = NULL;
+        bool in_quote = false;
+        char quote = '\0';
+        int depth = 0;
+        char *key = NULL;
+        char *value = NULL;
+        cJSON *json_value = NULL;
+
+        while ((cursor < body_end) && (isspace((unsigned char)*cursor) || (*cursor == ','))) {
+            cursor++;
+        }
+        if (cursor >= body_end) {
+            break;
+        }
+
+        key_start = cursor;
+        for (; cursor < body_end; ++cursor) {
+            char ch = *cursor;
+            if (in_quote) {
+                if ((ch == quote) && ((cursor == key_start) || (*(cursor - 1) != '\\'))) {
+                    in_quote = false;
+                }
+                continue;
+            }
+            if ((ch == '\'') || (ch == '"')) {
+                in_quote = true;
+                quote = ch;
+                continue;
+            }
+            if ((ch == '{') || (ch == '[')) {
+                depth++;
+                continue;
+            }
+            if (((ch == '}') || (ch == ']')) && (depth > 0)) {
+                depth--;
+                continue;
+            }
+            if ((ch == ':') && (depth == 0)) {
+                colon = cursor;
+                break;
+            }
+        }
+
+        if (colon == NULL) {
+            cJSON_Delete(root);
+            return NULL;
+        }
+
+        cursor = colon + 1;
+        value_end = cursor;
+        in_quote = false;
+        quote = '\0';
+        depth = 0;
+
+        for (; value_end < body_end; ++value_end) {
+            char ch = *value_end;
+            if (in_quote) {
+                if ((ch == quote) && ((value_end == cursor) || (*(value_end - 1) != '\\'))) {
+                    in_quote = false;
+                }
+                continue;
+            }
+            if ((ch == '\'') || (ch == '"')) {
+                in_quote = true;
+                quote = ch;
+                continue;
+            }
+            if ((ch == '{') || (ch == '[')) {
+                depth++;
+                continue;
+            }
+            if (((ch == '}') || (ch == ']')) && (depth > 0)) {
+                depth--;
+                continue;
+            }
+            if ((ch == ',') && (depth == 0)) {
+                break;
+            }
+        }
+
+        key = copy_trimmed_span(key_start, colon);
+        value = copy_trimmed_span(cursor, value_end);
+        if ((key == NULL) || (value == NULL) || (key[0] == '\0') || (value[0] == '\0')) {
+            free(key);
+            free(value);
+            cJSON_Delete(root);
+            return NULL;
+        }
+
+        strip_matching_outer_quotes(key);
+        if (key[0] == '\0') {
+            free(key);
+            free(value);
+            cJSON_Delete(root);
+            return NULL;
+        }
+
+        if ((strcasecmp(value, "true") == 0) || (strcasecmp(value, "false") == 0)) {
+            json_value = cJSON_CreateBool(strcasecmp(value, "true") == 0);
+        } else if (strcasecmp(value, "null") == 0) {
+            json_value = cJSON_CreateNull();
+        } else if (json_number_literal_valid(value)) {
+            json_value = cJSON_CreateNumber(strtod(value, NULL));
+        } else {
+            cJSON *parsed = cJSON_Parse(value);
+            if (parsed != NULL) {
+                json_value = parsed;
+            } else {
+                strip_matching_outer_quotes(value);
+                json_value = cJSON_CreateString(value);
+            }
+        }
+
+        if ((json_value == NULL) || !cJSON_AddItemToObject(root, key, json_value)) {
+            free(key);
+            free(value);
+            if (json_value != NULL) {
+                cJSON_Delete(json_value);
+            }
+            cJSON_Delete(root);
+            return NULL;
+        }
+
+        free(key);
+        free(value);
+        cursor = value_end;
+    }
+
+    normalized = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return normalized;
+}
 
 static const display_panel_touch_transform_t s_touch_transform_modes[] = {
     DISPLAY_PANEL_TOUCH_TRANSFORM_MIRROR_XY,
@@ -322,6 +626,8 @@ static int cmd_help(int argc, char **argv)
     printf("  session_list\n");
     printf("  session_clear <chat_id>\n");
     printf("  heap_info\n");
+    printf("  sd_status\n");
+    printf("  sd_mount\n");
     printf("  set_search_key <key>\n");
     printf("  set_proxy <host> <port> [http|socks5]\n");
     printf("  clear_proxy\n");
@@ -331,6 +637,7 @@ static int cmd_help(int argc, char **argv)
     printf("  cron_start\n");
     printf("  touch_cal [show|dashboard|status|next|prev|mode <name>]\n");
     printf("  tool_exec <name> [json]\n");
+    printf("  tool_debug <list|show|exec> ...\n");
     printf("  restart\n");
     return 0;
 }
@@ -650,6 +957,38 @@ static int cmd_heap_info(int argc, char **argv)
     return 0;
 }
 
+static int cmd_sd_status(int argc, char **argv)
+{
+    char status[384];
+    esp_err_t err = tool_sdcard_get_status(status, sizeof(status));
+    (void)argc;
+    (void)argv;
+
+    printf("%s", status[0] ? status : "(empty)\n");
+    return (err == ESP_OK || err == ESP_ERR_NOT_FOUND) ? 0 : 1;
+}
+
+static int cmd_sd_mount(int argc, char **argv)
+{
+    char status[384];
+    esp_err_t err = tool_sdcard_mount();
+    esp_err_t status_err;
+    (void)argc;
+    (void)argv;
+
+    if (err != ESP_OK) {
+        printf("SD mount failed: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+
+    printf("SD mounted.\n");
+    status_err = tool_sdcard_get_status(status, sizeof(status));
+    if ((status_err == ESP_OK) || (status_err == ESP_ERR_NOT_FOUND)) {
+        printf("%s", status[0] ? status : "(empty)\n");
+    }
+    return 0;
+}
+
 /* --- set_proxy command --- */
 static struct {
     struct arg_str *host;
@@ -701,7 +1040,7 @@ static int cmd_set_search_key(int argc, char **argv)
         return 1;
     }
     tool_web_search_set_key(search_key_args.key->sval[0]);
-    printf("Search API key saved.\n");
+    printf("Search API key saved (currently unused by local SearXNG backend).\n");
     return 0;
 }
 
@@ -1113,6 +1452,199 @@ static int cmd_cron_start(int argc, char **argv)
     return 1;
 }
 
+static char *build_tool_exec_input_json(int argc, char **argv, int json_arg_index)
+{
+    size_t total_len = 3;  /* "{}" + '\0' */
+    char *raw = NULL;
+    char *trimmed = NULL;
+    char *stripped = NULL;
+    char *normalized = NULL;
+    char *fallback = NULL;
+    size_t off = 0;
+
+    if (argc <= json_arg_index) {
+        raw = calloc(1, total_len);
+        if (raw != NULL) {
+            memcpy(raw, "{}", 3);
+        }
+        return raw;
+    }
+
+    for (int i = json_arg_index; i < argc; ++i) {
+        total_len += strlen(argv[i]) + 1;
+    }
+
+    raw = calloc(1, total_len);
+    if (raw == NULL) {
+        return NULL;
+    }
+
+    for (int i = json_arg_index; i < argc; ++i) {
+        size_t part_len = strlen(argv[i]);
+        memcpy(raw + off, argv[i], part_len);
+        off += part_len;
+        if (i < (argc - 1)) {
+            raw[off++] = ' ';
+        }
+    }
+    raw[off] = '\0';
+
+    trimmed = dup_trimmed_text(raw);
+    free(raw);
+    if (trimmed == NULL) {
+        return NULL;
+    }
+    if (trimmed[0] == '\0') {
+        free(trimmed);
+        raw = calloc(1, total_len);
+        if (raw != NULL) {
+            memcpy(raw, "{}", 3);
+        }
+        return raw;
+    }
+
+    normalized = normalize_json_text(trimmed);
+    if (normalized != NULL) {
+        if (normalized[0] != '"') {
+            free(trimmed);
+            return normalized;
+        }
+        fallback = normalized;
+        normalized = NULL;
+    }
+
+    stripped = strdup(trimmed);
+    if (stripped == NULL) {
+        free(fallback);
+        free(trimmed);
+        return NULL;
+    }
+    strip_matching_outer_quotes(stripped);
+
+    normalized = normalize_json_text(stripped);
+    if (normalized != NULL) {
+        if (normalized[0] != '"') {
+            free(fallback);
+            free(trimmed);
+            free(stripped);
+            return normalized;
+        }
+        free(fallback);
+        fallback = normalized;
+        normalized = NULL;
+    }
+
+    normalized = decode_wrapped_json_string(stripped);
+    if (normalized != NULL) {
+        if (normalized[0] != '"') {
+            free(fallback);
+            free(trimmed);
+            free(stripped);
+            return normalized;
+        }
+        free(fallback);
+        fallback = normalized;
+        normalized = NULL;
+    }
+
+    normalized = normalize_relaxed_tool_json(stripped);
+    if (normalized != NULL) {
+        free(fallback);
+        free(trimmed);
+        free(stripped);
+        return normalized;
+    }
+
+    free(trimmed);
+    if (fallback != NULL) {
+        free(stripped);
+        return fallback;
+    }
+
+    return stripped;
+}
+
+static cJSON *tool_debug_find_entry(cJSON *tools, const char *name)
+{
+    cJSON *tool = NULL;
+
+    if (!cJSON_IsArray(tools) || (name == NULL) || (name[0] == '\0')) {
+        return NULL;
+    }
+
+    cJSON_ArrayForEach(tool, tools) {
+        const char *tool_name = cJSON_GetStringValue(cJSON_GetObjectItem(tool, "name"));
+        if ((tool_name != NULL) && (strcmp(tool_name, name) == 0)) {
+            return tool;
+        }
+    }
+
+    return NULL;
+}
+
+static void print_tool_debug_usage(void)
+{
+    printf("Usage:\n");
+    printf("  tool_debug list\n");
+    printf("  tool_debug show <name>\n");
+    printf("  tool_debug exec <name> [json]\n");
+    printf("Examples:\n");
+    printf("  tool_debug list\n");
+    printf("  tool_debug show read_sd_file\n");
+    printf("  tool_debug exec list_sd_dir '{\"path\":\"/sdcard\"}'\n");
+    printf("  tool_debug exec read_sd_file '{\"path\":\"/sdcard/test.txt\",\"max_bytes\":256}'\n");
+}
+
+static int run_tool_exec_command(const char *tool_name, int argc, char **argv, int json_arg_index, bool verbose)
+{
+    char *input_json = NULL;
+    char *output = NULL;
+    int64_t start_us = 0;
+    int64_t elapsed_us = 0;
+    esp_err_t err;
+
+    if ((tool_name == NULL) || (tool_name[0] == '\0')) {
+        if (verbose) {
+            print_tool_debug_usage();
+        } else {
+            printf("Usage: tool_exec <name> [json]\n");
+        }
+        return 1;
+    }
+
+    output = calloc(1, TOOL_DEBUG_OUTPUT_SIZE);
+    if (!output) {
+        printf("Out of memory.\n");
+        return 1;
+    }
+
+    input_json = build_tool_exec_input_json(argc, argv, json_arg_index);
+    if (!input_json) {
+        printf("Out of memory.\n");
+        free(output);
+        return 1;
+    }
+
+    if (verbose) {
+        printf("tool: %s\n", tool_name);
+        printf("input: %s\n", input_json);
+        printf("output_buffer: %d bytes\n", TOOL_DEBUG_OUTPUT_SIZE - 1);
+    }
+
+    start_us = esp_timer_get_time();
+    err = tool_registry_execute(tool_name, input_json, output, TOOL_DEBUG_OUTPUT_SIZE);
+    elapsed_us = esp_timer_get_time() - start_us;
+
+    printf("%s status: %s\n", verbose ? "tool_debug" : "tool_exec", esp_err_to_name(err));
+    if (verbose) {
+        printf("elapsed_ms: %lld\n", (long long)(elapsed_us / 1000));
+    }
+    printf("%s\n", output[0] ? output : "(empty)");
+    free(input_json);
+    free(output);
+    return (err == ESP_OK) ? 0 : 1;
+}
+
 static int cmd_tool_exec(int argc, char **argv)
 {
     if (argc < 2) {
@@ -1120,20 +1652,96 @@ static int cmd_tool_exec(int argc, char **argv)
         return 1;
     }
 
-    const char *tool_name = argv[1];
-    const char *input_json = (argc >= 3) ? argv[2] : "{}";
+    return run_tool_exec_command(argv[1], argc, argv, 2, false);
+}
 
-    char *output = calloc(1, 4096);
-    if (!output) {
-        printf("Out of memory.\n");
+static int cmd_tool_debug(int argc, char **argv)
+{
+    const char *tools_json = tool_registry_get_tools_json();
+    cJSON *tools = NULL;
+
+    if ((argc < 2) || (strcmp(argv[1], "help") == 0)) {
+        print_tool_debug_usage();
+        return (argc < 2) ? 1 : 0;
+    }
+
+    if ((tools_json == NULL) || (tools_json[0] == '\0')) {
+        printf("No tools registered.\n");
         return 1;
     }
 
-    esp_err_t err = tool_registry_execute(tool_name, input_json, output, 4096);
-    printf("tool_exec status: %s\n", esp_err_to_name(err));
-    printf("%s\n", output[0] ? output : "(empty)");
-    free(output);
-    return (err == ESP_OK) ? 0 : 1;
+    tools = cJSON_Parse(tools_json);
+    if (tools == NULL) {
+        printf("Failed to parse registered tools JSON.\n");
+        return 1;
+    }
+
+    if (strcmp(argv[1], "list") == 0) {
+        int count = cJSON_GetArraySize(tools);
+        cJSON *tool = NULL;
+
+        printf("Registered tools (%d):\n", count);
+        cJSON_ArrayForEach(tool, tools) {
+            const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(tool, "name"));
+            const char *description = cJSON_GetStringValue(cJSON_GetObjectItem(tool, "description"));
+            printf("- %s: %s\n",
+                   (name != NULL) ? name : "(unknown)",
+                   (description != NULL) ? description : "");
+        }
+        cJSON_Delete(tools);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "show") == 0) {
+        cJSON *entry = NULL;
+        cJSON *schema = NULL;
+        char *schema_text = NULL;
+
+        if (argc < 3) {
+            print_tool_debug_usage();
+            cJSON_Delete(tools);
+            return 1;
+        }
+
+        entry = tool_debug_find_entry(tools, argv[2]);
+        if (entry == NULL) {
+            printf("Unknown tool: %s\n", argv[2]);
+            cJSON_Delete(tools);
+            return 1;
+        }
+
+        {
+            const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "name"));
+            const char *description = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "description"));
+            printf("name: %s\n", (name != NULL) ? name : "(unknown)");
+            printf("description: %s\n", (description != NULL) ? description : "");
+        }
+
+        schema = cJSON_GetObjectItem(entry, "input_schema");
+        schema_text = cJSON_Print(schema);
+        printf("input_schema:\n%s\n", (schema_text != NULL) ? schema_text : "(none)");
+        free(schema_text);
+        cJSON_Delete(tools);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "exec") == 0) {
+        int rc;
+
+        if (argc < 3) {
+            print_tool_debug_usage();
+            cJSON_Delete(tools);
+            return 1;
+        }
+
+        rc = run_tool_exec_command(argv[2], argc, argv, 3, true);
+        cJSON_Delete(tools);
+        return rc;
+    }
+
+    print_tool_debug_usage();
+    cJSON_Delete(tools);
+    return 1;
 }
 
 /* --- restart command --- */
@@ -1368,12 +1976,28 @@ esp_err_t serial_cli_init(void)
     };
     esp_console_cmd_register(&heap_cmd);
 
+    /* sd_status */
+    esp_console_cmd_t sd_status_cmd = {
+        .command = "sd_status",
+        .help = "Show SD card mount and filesystem status",
+        .func = &cmd_sd_status,
+    };
+    esp_console_cmd_register(&sd_status_cmd);
+
+    /* sd_mount */
+    esp_console_cmd_t sd_mount_cmd = {
+        .command = "sd_mount",
+        .help = "Attempt to mount the SD card now",
+        .func = &cmd_sd_mount,
+    };
+    esp_console_cmd_register(&sd_mount_cmd);
+
     /* set_search_key */
-    search_key_args.key = arg_str1(NULL, NULL, "<key>", "Brave Search API key");
+    search_key_args.key = arg_str1(NULL, NULL, "<key>", "Optional search API key (unused by local SearXNG)");
     search_key_args.end = arg_end(1);
     esp_console_cmd_t search_key_cmd = {
         .command = "set_search_key",
-        .help = "Set Brave Search API key for web_search tool",
+        .help = "Set optional search API key for web_search tool (unused by local SearXNG)",
         .func = &cmd_set_search_key,
         .argtable = &search_key_args,
     };
@@ -1447,6 +2071,14 @@ esp_err_t serial_cli_init(void)
         .func = &cmd_tool_exec,
     };
     esp_console_cmd_register(&tool_exec_cmd);
+
+    /* tool_debug */
+    esp_console_cmd_t tool_debug_cmd = {
+        .command = "tool_debug",
+        .help = "Inspect or execute tools: tool_debug list | show <name> | exec <name> '{...json...}'",
+        .func = &cmd_tool_debug,
+    };
+    esp_console_cmd_register(&tool_debug_cmd);
 
     /* restart */
     esp_console_cmd_t restart_cmd = {

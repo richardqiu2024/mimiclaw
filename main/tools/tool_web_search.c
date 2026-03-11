@@ -6,7 +6,6 @@
 #include <stdlib.h>
 #include "esp_log.h"
 #include "esp_http_client.h"
-#include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "nvs.h"
 #include "cJSON.h"
@@ -17,6 +16,10 @@ static char s_search_key[128] = {0};
 
 #define SEARCH_BUF_SIZE     (16 * 1024)
 #define SEARCH_RESULT_COUNT 5
+#define SEARCH_API_HOST     "192.168.1.175"
+#define SEARCH_API_PORT     8888
+#define SEARCH_API_PATH     "/search"
+#define SEARCH_API_URL      "http://" SEARCH_API_HOST ":8888" SEARCH_API_PATH
 
 /* ── Response accumulator ─────────────────────────────────────── */
 
@@ -44,12 +47,10 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 
 esp_err_t tool_web_search_init(void)
 {
-    /* Start with build-time default */
     if (MIMI_SECRET_SEARCH_KEY[0] != '\0') {
         strncpy(s_search_key, MIMI_SECRET_SEARCH_KEY, sizeof(s_search_key) - 1);
     }
 
-    /* NVS overrides take highest priority (set via CLI) */
     nvs_handle_t nvs;
     if (nvs_open(MIMI_NVS_SEARCH, NVS_READONLY, &nvs) == ESP_OK) {
         char tmp[128] = {0};
@@ -60,11 +61,7 @@ esp_err_t tool_web_search_init(void)
         nvs_close(nvs);
     }
 
-    if (s_search_key[0]) {
-        ESP_LOGI(TAG, "Web search initialized (key configured)");
-    } else {
-        ESP_LOGW(TAG, "No search API key. Use CLI: set_search_key <KEY>");
-    }
+    ESP_LOGI(TAG, "Web search initialized (SearXNG: " SEARCH_API_HOST ":%d)", SEARCH_API_PORT);
     return ESP_OK;
 }
 
@@ -124,7 +121,7 @@ static void format_results(cJSON *root, char *output, size_t output_size)
     }
 }
 
-/* ── Direct HTTPS request ─────────────────────────────────────── */
+/* ── Direct HTTP request ──────────────────────────────────────── */
 
 static esp_err_t search_direct(const char *url, search_buf_t *sb)
 {
@@ -148,66 +145,6 @@ static esp_err_t search_direct(const char *url, search_buf_t *sb)
     if (err != ESP_OK) return err;
     if (status != 200) {
         ESP_LOGE(TAG, "Search API returned %d", status);
-        return ESP_FAIL;
-    }
-    return ESP_OK;
-}
-
-/* ── Proxy HTTPS request ──────────────────────────────────────── */
-
-static esp_err_t search_via_proxy(const char *path, search_buf_t *sb)
-{
-    proxy_conn_t *conn = proxy_conn_open("192.168.1.175", 8888, 15000);
-    if (!conn) return ESP_ERR_HTTP_CONNECT;
-
-    char header[512];
-    int hlen = snprintf(header, sizeof(header),
-        "GET %s HTTP/1.1\r\n"
-        "Host: 192.168.1.175:8888\r\n"
-        "Accept: application/json\r\n"
-        "Connection: close\r\n\r\n",
-        path);
-
-    if (proxy_conn_write(conn, header, hlen) < 0) {
-        proxy_conn_close(conn);
-        return ESP_ERR_HTTP_WRITE_DATA;
-    }
-
-    /* Read full response */
-    char tmp[1024];
-    size_t total = 0;
-    while (1) {
-        int n = proxy_conn_read(conn, tmp, sizeof(tmp), 15000);
-        if (n <= 0) break;
-        size_t copy = (total + n < sb->cap - 1) ? (size_t)n : sb->cap - 1 - total;
-        if (copy > 0) {
-            memcpy(sb->data + total, tmp, copy);
-            total += copy;
-        }
-    }
-    sb->data[total] = '\0';
-    sb->len = total;
-    proxy_conn_close(conn);
-
-    /* Check status */
-    int status = 0;
-    if (total > 5 && strncmp(sb->data, "HTTP/", 5) == 0) {
-        const char *sp = strchr(sb->data, ' ');
-        if (sp) status = atoi(sp + 1);
-    }
-
-    /* Strip headers */
-    char *body = strstr(sb->data, "\r\n\r\n");
-    if (body) {
-        body += 4;
-        size_t blen = total - (body - sb->data);
-        memmove(sb->data, body, blen);
-        sb->len = blen;
-        sb->data[sb->len] = '\0';
-    }
-
-    if (status != 200) {
-        ESP_LOGE(TAG, "Search API returned %d via proxy", status);
         return ESP_FAIL;
     }
     return ESP_OK;
@@ -238,10 +175,6 @@ esp_err_t tool_web_search_execute(const char *input_json, char *output, size_t o
     url_encode(query->valuestring, encoded_query, sizeof(encoded_query));
     cJSON_Delete(input);
 
-    char path[384];
-    snprintf(path, sizeof(path),
-             "/search?q=%s&format=json", encoded_query);
-
     /* Allocate response buffer from PSRAM */
     search_buf_t sb = {0};
     sb.data = heap_caps_calloc(1, SEARCH_BUF_SIZE, MALLOC_CAP_SPIRAM);
@@ -252,14 +185,14 @@ esp_err_t tool_web_search_execute(const char *input_json, char *output, size_t o
     sb.cap = SEARCH_BUF_SIZE;
 
     /* Make HTTP request */
-    esp_err_t err;
     if (http_proxy_is_enabled()) {
-        err = search_via_proxy(path, &sb);
-    } else {
-        char url[512];
-        snprintf(url, sizeof(url), "http://192.168.1.175:8888%s", path);
-        err = search_direct(url, &sb);
+        ESP_LOGW(TAG, "HTTP proxy is enabled globally, but web_search uses direct HTTP to local SearXNG");
     }
+
+    char url[512];
+    snprintf(url, sizeof(url), SEARCH_API_URL "?q=%s&format=json",
+             encoded_query);
+    esp_err_t err = search_direct(url, &sb);
 
     if (err != ESP_OK) {
         free(sb.data);
@@ -292,6 +225,6 @@ esp_err_t tool_web_search_set_key(const char *api_key)
     nvs_close(nvs);
 
     strncpy(s_search_key, api_key, sizeof(s_search_key) - 1);
-    ESP_LOGI(TAG, "Search API key saved");
+    ESP_LOGI(TAG, "Search API key saved (unused by local SearXNG backend)");
     return ESP_OK;
 }

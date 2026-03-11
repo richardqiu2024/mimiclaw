@@ -46,6 +46,8 @@ esp_err_t context_build_system_prompt(char *buf, size_t size)
         "- write_file: Write/overwrite a file on SPIFFS.\n"
         "- edit_file: Find-and-replace edit a file on SPIFFS.\n"
         "- list_dir: List files on SPIFFS, optionally filter by prefix.\n"
+        "- read_sd_file: Read a file from the SD card (path must start with /sdcard/). The system auto-mounts it on demand.\n"
+        "- list_sd_dir: List one directory from the SD card (path must start with /sdcard/). The system auto-mounts it on demand.\n"
         "- cron_add: Schedule a recurring or one-shot task. The message will trigger an agent turn when the job fires.\n"
         "- cron_list: List all scheduled cron jobs.\n"
         "- cron_remove: Remove a scheduled cron job by ID.\n\n"

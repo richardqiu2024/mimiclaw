@@ -129,12 +129,17 @@
 #define ECHOEAR_UART1_RX_V1_2               GPIO_NUM_4
 
 // =============================================================================
-// SD Card (SPI)
+// SD Card (1-bit SDMMC / SPI-compatible signal names)
 // =============================================================================
 
 #define ECHOEAR_SD_MISO                     GPIO_NUM_17
 #define ECHOEAR_SD_SCK                      GPIO_NUM_16
 #define ECHOEAR_SD_MOSI                     GPIO_NUM_38
+
+/* Preferred SDIO/SDMMC signal aliases for the board schematic */
+#define ECHOEAR_SD_D0                       ECHOEAR_SD_MISO
+#define ECHOEAR_SD_CLK                      ECHOEAR_SD_SCK
+#define ECHOEAR_SD_CMD                      ECHOEAR_SD_MOSI
 
 // =============================================================================
 // Touch Pad (PCB version dependent)

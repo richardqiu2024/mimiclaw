@@ -21,6 +21,7 @@
 #include "cli/ble_cli.h"
 #include "proxy/http_proxy.h"
 #include "tools/tool_registry.h"
+#include "tools/tool_sdcard.h"
 #include "cron/cron_service.h"
 #include "heartbeat/heartbeat.h"
 #include "buttons/button_driver.h"
@@ -151,6 +152,12 @@ void app_main(void)
     ESP_ERROR_CHECK(telegram_bot_init());
     ESP_ERROR_CHECK(llm_proxy_init());
     ESP_ERROR_CHECK(tool_registry_init());
+    {
+        esp_err_t sd_err = tool_sdcard_mount();
+        if (sd_err != ESP_OK) {
+            ESP_LOGW(TAG, "SD card mount skipped: %s", esp_err_to_name(sd_err));
+        }
+    }
     ESP_ERROR_CHECK(cron_service_init());
     ESP_ERROR_CHECK(heartbeat_init());
     ESP_ERROR_CHECK(agent_loop_init());

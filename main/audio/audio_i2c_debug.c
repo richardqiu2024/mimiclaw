@@ -8,7 +8,7 @@
 static esp_err_t echoear_audio_device_get_status(uint8_t address,
                                                  echoear_audio_i2c_status_t *status)
 {
-    bool installed_here = false;
+    echoear_i2c_debug_session_t session = {0};
     esp_err_t err;
 
     if (status == NULL) {
@@ -27,16 +27,16 @@ static esp_err_t echoear_audio_device_get_status(uint8_t address,
         return err;
     }
 
-    err = echoear_i2c_debug_open(&installed_here);
+    err = echoear_i2c_debug_open(&session);
     if (err != ESP_OK) {
         status->probe_err = err;
         return err;
     }
 
-    err = echoear_i2c_debug_probe(address, 100);
+    err = echoear_i2c_debug_probe(&session, address, 100);
     if (err != ESP_OK) {
         status->probe_err = err;
-        echoear_i2c_debug_close(installed_here);
+        echoear_i2c_debug_close(&session);
         return err;
     }
 
@@ -44,17 +44,17 @@ static esp_err_t echoear_audio_device_get_status(uint8_t address,
     status->probe_err = ESP_OK;
 
     for (size_t index = 0; index < sizeof(status->regs); ++index) {
-        err = echoear_i2c_debug_read_reg8(address, (uint8_t)(status->reg_start + index),
+        err = echoear_i2c_debug_read_reg8(&session, address, (uint8_t)(status->reg_start + index),
                                           &status->regs[index], 100);
         if (err != ESP_OK) {
             status->read_err = err;
-            echoear_i2c_debug_close(installed_here);
+            echoear_i2c_debug_close(&session);
             return err;
         }
         status->register_count++;
     }
 
-    echoear_i2c_debug_close(installed_here);
+    echoear_i2c_debug_close(&session);
     return ESP_OK;
 }
 

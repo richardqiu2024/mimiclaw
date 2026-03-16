@@ -1,54 +1,106 @@
 #include "hardware/echoear_i2c_debug.h"
 
 #include "hardware/echoear_config.h"
+#include "display/display_panel.h"
 
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-i2c_port_t echoear_i2c_debug_port(void)
+static i2c_port_t echoear_i2c_debug_select_port(void)
 {
+    if (display_panel_touch_is_ready()) {
+        return ECHOEAR_TOUCH_I2C_NUM;
+    }
     return ECHOEAR_DETECT_I2C_NUM;
 }
 
-esp_err_t echoear_i2c_debug_open(bool *installed_here)
+esp_err_t echoear_i2c_debug_open(echoear_i2c_debug_session_t *session)
 {
     i2c_config_t config = ECHOEAR_I2C_MASTER_CONFIG();
     esp_err_t err;
+    i2c_port_t port;
 
-    if (installed_here == NULL) {
+    if (session == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    *installed_here = false;
-    err = i2c_param_config(echoear_i2c_debug_port(), &config);
+    session->port = echoear_i2c_debug_select_port();
+    session->installed_here = false;
+    session->lvgl_locked = false;
+
+    port = session->port;
+    if ((port == ECHOEAR_TOUCH_I2C_NUM) && display_panel_lvgl_is_ready()) {
+        if (!display_panel_lvgl_lock(1000)) {
+            return ESP_ERR_TIMEOUT;
+        }
+        session->lvgl_locked = true;
+    }
+
+    if (port == ECHOEAR_TOUCH_I2C_NUM) {
+        return ESP_OK;
+    }
+
+    err = i2c_param_config(port, &config);
     if (err != ESP_OK) {
+        if (session->lvgl_locked) {
+            (void)display_panel_lvgl_unlock();
+            session->lvgl_locked = false;
+        }
         return err;
     }
 
-    err = i2c_driver_install(echoear_i2c_debug_port(), config.mode, 0, 0, 0);
+    err = i2c_driver_install(port, config.mode, 0, 0, 0);
     if (err == ESP_OK) {
-        *installed_here = true;
+        session->installed_here = true;
         return ESP_OK;
     }
     if (err == ESP_ERR_INVALID_STATE) {
         return ESP_OK;
     }
+    if (session->lvgl_locked) {
+        (void)display_panel_lvgl_unlock();
+        session->lvgl_locked = false;
+    }
     return err;
 }
 
-void echoear_i2c_debug_close(bool installed_here)
+void echoear_i2c_debug_close(echoear_i2c_debug_session_t *session)
 {
-    if (!installed_here) {
+    if (session == NULL) {
         return;
     }
-    (void)i2c_driver_delete(echoear_i2c_debug_port());
+    if (session->installed_here) {
+        (void)i2c_driver_delete(session->port);
+        session->installed_here = false;
+    }
+    if (session->lvgl_locked) {
+        (void)display_panel_lvgl_unlock();
+        session->lvgl_locked = false;
+    }
 }
 
-esp_err_t echoear_i2c_debug_probe(uint8_t address, uint32_t timeout_ms)
+static esp_err_t echoear_i2c_debug_session_valid(const echoear_i2c_debug_session_t *session)
+{
+    if (session == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if ((session->port != ECHOEAR_TOUCH_I2C_NUM) && (session->port != ECHOEAR_DETECT_I2C_NUM)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return ESP_OK;
+}
+
+esp_err_t echoear_i2c_debug_probe(const echoear_i2c_debug_session_t *session,
+                                  uint8_t address, uint32_t timeout_ms)
 {
     i2c_cmd_handle_t cmd = i2c_cmd_link_create();
     esp_err_t ret;
+
+    ret = echoear_i2c_debug_session_valid(session);
+    if (ret != ESP_OK) {
+        return ret;
+    }
 
     if (cmd == NULL) {
         return ESP_ERR_NO_MEM;
@@ -62,44 +114,62 @@ esp_err_t echoear_i2c_debug_probe(uint8_t address, uint32_t timeout_ms)
         ret = i2c_master_stop(cmd);
     }
     if (ret == ESP_OK) {
-        ret = i2c_master_cmd_begin(echoear_i2c_debug_port(), cmd, pdMS_TO_TICKS(timeout_ms));
+        ret = i2c_master_cmd_begin(session->port, cmd, pdMS_TO_TICKS(timeout_ms));
     }
 
     i2c_cmd_link_delete(cmd);
     return ret;
 }
 
-esp_err_t echoear_i2c_debug_read_reg8(uint8_t address, uint8_t reg,
+esp_err_t echoear_i2c_debug_read_reg8(const echoear_i2c_debug_session_t *session,
+                                      uint8_t address, uint8_t reg,
                                       uint8_t *value, uint32_t timeout_ms)
 {
+    esp_err_t ret = echoear_i2c_debug_session_valid(session);
+
+    if (ret != ESP_OK) {
+        return ret;
+    }
     if (value == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
     return i2c_master_write_read_device(
-        echoear_i2c_debug_port(), address, &reg, 1, value, 1, pdMS_TO_TICKS(timeout_ms)
+        session->port, address, &reg, 1, value, 1, pdMS_TO_TICKS(timeout_ms)
     );
 }
 
-esp_err_t echoear_i2c_debug_write_reg8(uint8_t address, uint8_t reg,
+esp_err_t echoear_i2c_debug_write_reg8(const echoear_i2c_debug_session_t *session,
+                                       uint8_t address, uint8_t reg,
                                        uint8_t value, uint32_t timeout_ms)
 {
     uint8_t payload[2] = {reg, value};
+    esp_err_t ret = echoear_i2c_debug_session_valid(session);
+
+    if (ret != ESP_OK) {
+        return ret;
+    }
 
     return i2c_master_write_to_device(
-        echoear_i2c_debug_port(), address, payload, sizeof(payload), pdMS_TO_TICKS(timeout_ms)
+        session->port, address, payload, sizeof(payload), pdMS_TO_TICKS(timeout_ms)
     );
 }
 
-esp_err_t echoear_i2c_debug_read_regs(uint8_t address, uint8_t start_reg,
+esp_err_t echoear_i2c_debug_read_regs(const echoear_i2c_debug_session_t *session,
+                                      uint8_t address, uint8_t start_reg,
                                       uint8_t *data, size_t len, uint32_t timeout_ms)
 {
+    esp_err_t ret = echoear_i2c_debug_session_valid(session);
+
+    if (ret != ESP_OK) {
+        return ret;
+    }
     if ((data == NULL) || (len == 0)) {
         return ESP_ERR_INVALID_ARG;
     }
 
     return i2c_master_write_read_device(
-        echoear_i2c_debug_port(), address, &start_reg, 1, data, len, pdMS_TO_TICKS(timeout_ms)
+        session->port, address, &start_reg, 1, data, len, pdMS_TO_TICKS(timeout_ms)
     );
 }
 

@@ -52,7 +52,7 @@ static serial_cli_output_cb_t s_output_cb = NULL;
 static void *s_output_ctx = NULL;
 
 #define TOOL_DEBUG_OUTPUT_SIZE ((32 * 1024) + 1)
-#define CLI_I2C_DEBUG_PORT ECHOEAR_DETECT_I2C_NUM
+#define CLI_I2C_SCAN_TIMEOUT_MS 20
 
 static void cli_write_raw(const char *data, size_t len)
 {
@@ -988,7 +988,7 @@ static const char *cli_i2c_known_device_name(uint8_t address)
 
 static int cmd_i2c_scan(int argc, char **argv)
 {
-    bool installed_here = false;
+    echoear_i2c_debug_session_t session = {0};
     int found = 0;
     esp_err_t err;
     (void)argc;
@@ -999,7 +999,7 @@ static int cmd_i2c_scan(int argc, char **argv)
         printf("Codec power enable failed: %s\n", esp_err_to_name(err));
     }
 
-    err = echoear_i2c_debug_open(&installed_here);
+    err = echoear_i2c_debug_open(&session);
     if (err != ESP_OK) {
         printf("I2C debug bus open failed: %s\n", esp_err_to_name(err));
         return 1;
@@ -1007,7 +1007,7 @@ static int cmd_i2c_scan(int argc, char **argv)
 
     printf(
         "Scanning shared I2C bus via I2C%d on SDA=GPIO%d SCL=GPIO%d\n",
-        CLI_I2C_DEBUG_PORT, (int)ECHOEAR_AUDIO_I2C_SDA, (int)ECHOEAR_AUDIO_I2C_SCL
+        session.port, (int)ECHOEAR_AUDIO_I2C_SDA, (int)ECHOEAR_AUDIO_I2C_SCL
     );
     printf("     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n");
     for (int row = 0; row < 128; row += 16) {
@@ -1019,7 +1019,7 @@ static int cmd_i2c_scan(int argc, char **argv)
                 continue;
             }
 
-            err = echoear_i2c_debug_probe(address, 50);
+            err = echoear_i2c_debug_probe(&session, address, CLI_I2C_SCAN_TIMEOUT_MS);
             if (err == ESP_OK) {
                 printf("%02x ", address);
                 found++;
@@ -1038,7 +1038,7 @@ static int cmd_i2c_scan(int argc, char **argv)
         printf("Found %d device(s).\n", found);
         for (uint8_t address = 0x03; address <= 0x77; ++address) {
             const char *name;
-            err = echoear_i2c_debug_probe(address, 50);
+            err = echoear_i2c_debug_probe(&session, address, CLI_I2C_SCAN_TIMEOUT_MS);
             if (err != ESP_OK) {
                 continue;
             }
@@ -1049,7 +1049,7 @@ static int cmd_i2c_scan(int argc, char **argv)
         }
     }
 
-    echoear_i2c_debug_close(installed_here);
+    echoear_i2c_debug_close(&session);
     return 0;
 }
 

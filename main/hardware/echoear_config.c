@@ -1,32 +1,11 @@
 #include "hardware/echoear_config.h"
+#include "hardware/echoear_i2c_debug.h"
 #include <esp_log.h>
 #include <driver/i2c.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 static const char *TAG = "echoear_config";
-
-static esp_err_t echoear_i2c_probe(i2c_port_t i2c_num, uint8_t dev_addr, uint32_t timeout_ms)
-{
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    if (cmd == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-
-    esp_err_t ret = i2c_master_start(cmd);
-    if (ret == ESP_OK) {
-        ret = i2c_master_write_byte(cmd, (dev_addr << 1) | I2C_MASTER_WRITE, true);
-    }
-    if (ret == ESP_OK) {
-        ret = i2c_master_stop(cmd);
-    }
-    if (ret == ESP_OK) {
-        ret = i2c_master_cmd_begin(i2c_num, cmd, pdMS_TO_TICKS(timeout_ms));
-    }
-
-    i2c_cmd_link_delete(cmd);
-    return ret;
-}
 
 static void echoear_fill_pins_for_version(echoear_config_t *config, echoear_pcb_version_t version)
 {
@@ -50,11 +29,20 @@ static void echoear_fill_pins_for_version(echoear_config_t *config, echoear_pcb_
 
 echoear_pcb_version_t echoear_detect_pcb_version(i2c_port_t i2c_num)
 {
+    echoear_i2c_debug_session_t session = {0};
     esp_err_t ret;
+    (void)i2c_num;
+
+    ret = echoear_i2c_debug_open(&session);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Shared I2C open failed during PCB detect: %s", esp_err_to_name(ret));
+        return ECHOEAR_PCB_UNKNOWN;
+    }
 
     // Try to probe ES8311 directly (V1.0 doesn't need codec power enable)
-    ret = echoear_i2c_probe(i2c_num, ECHOEAR_ES8311_ADDR, 100);
+    ret = echoear_i2c_debug_probe(&session, ECHOEAR_ES8311_ADDR, 100);
     if (ret == ESP_OK) {
+        echoear_i2c_debug_close(&session);
         ESP_LOGI(TAG, "Detected EchoEar PCB V1.0");
         return ECHOEAR_PCB_V1_0;
     }
@@ -80,7 +68,8 @@ echoear_pcb_version_t echoear_detect_pcb_version(i2c_port_t i2c_num)
 
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    ret = echoear_i2c_probe(i2c_num, ECHOEAR_ES8311_ADDR, 100);
+    ret = echoear_i2c_debug_probe(&session, ECHOEAR_ES8311_ADDR, 100);
+    echoear_i2c_debug_close(&session);
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "Detected EchoEar PCB V1.2");
         return ECHOEAR_PCB_V1_2;
@@ -99,32 +88,8 @@ esp_err_t echoear_config_init(echoear_config_t *config)
     // Set a deterministic fallback first.
     echoear_fill_pins_for_version(config, ECHOEAR_PCB_V1_0);
 
-    // Initialize temporary I2C bus for board-version detection.
-    esp_err_t ret;
-    bool i2c_installed_here = false;
-    i2c_config_t i2c_conf = ECHOEAR_I2C_MASTER_CONFIG();
-    ret = i2c_param_config(ECHOEAR_DETECT_I2C_NUM, &i2c_conf);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "I2C param config for detection failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    ret = i2c_driver_install(ECHOEAR_DETECT_I2C_NUM, i2c_conf.mode, 0, 0, 0);
-    if (ret == ESP_OK) {
-        i2c_installed_here = true;
-    } else if (ret != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "I2C driver install for detection failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
     // Detect PCB version
-    echoear_pcb_version_t version = echoear_detect_pcb_version(ECHOEAR_DETECT_I2C_NUM);
-
-    if (i2c_installed_here) {
-        esp_err_t del_ret = i2c_driver_delete(ECHOEAR_DETECT_I2C_NUM);
-        if (del_ret != ESP_OK) {
-            ESP_LOGW(TAG, "I2C driver delete after detection failed: %s", esp_err_to_name(del_ret));
-        }
-    }
+    echoear_pcb_version_t version = echoear_detect_pcb_version(ECHOEAR_SHARED_I2C_NUM);
 
     if (version == ECHOEAR_PCB_UNKNOWN) {
         ESP_LOGW(TAG, "PCB detection failed, fallback to V1.0 pin map");

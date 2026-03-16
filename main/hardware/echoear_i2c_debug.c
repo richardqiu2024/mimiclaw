@@ -7,12 +7,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-static i2c_port_t echoear_i2c_debug_select_port(void)
+static bool echoear_i2c_shared_bus_is_runtime_owned(void)
 {
-    if (display_panel_touch_is_ready()) {
-        return ECHOEAR_TOUCH_I2C_NUM;
-    }
-    return ECHOEAR_DETECT_I2C_NUM;
+    return display_panel_touch_is_ready() || display_panel_is_ready();
 }
 
 esp_err_t echoear_i2c_debug_open(echoear_i2c_debug_session_t *session)
@@ -25,28 +22,16 @@ esp_err_t echoear_i2c_debug_open(echoear_i2c_debug_session_t *session)
         return ESP_ERR_INVALID_ARG;
     }
 
-    session->port = echoear_i2c_debug_select_port();
+    session->port = ECHOEAR_TOUCH_I2C_NUM;
     session->installed_here = false;
-    session->lvgl_locked = false;
 
     port = session->port;
-    if ((port == ECHOEAR_TOUCH_I2C_NUM) && display_panel_lvgl_is_ready()) {
-        if (!display_panel_lvgl_lock(1000)) {
-            return ESP_ERR_TIMEOUT;
-        }
-        session->lvgl_locked = true;
-    }
-
-    if (port == ECHOEAR_TOUCH_I2C_NUM) {
+    if (echoear_i2c_shared_bus_is_runtime_owned()) {
         return ESP_OK;
     }
 
     err = i2c_param_config(port, &config);
     if (err != ESP_OK) {
-        if (session->lvgl_locked) {
-            (void)display_panel_lvgl_unlock();
-            session->lvgl_locked = false;
-        }
         return err;
     }
 
@@ -57,10 +42,6 @@ esp_err_t echoear_i2c_debug_open(echoear_i2c_debug_session_t *session)
     }
     if (err == ESP_ERR_INVALID_STATE) {
         return ESP_OK;
-    }
-    if (session->lvgl_locked) {
-        (void)display_panel_lvgl_unlock();
-        session->lvgl_locked = false;
     }
     return err;
 }
@@ -74,10 +55,6 @@ void echoear_i2c_debug_close(echoear_i2c_debug_session_t *session)
         (void)i2c_driver_delete(session->port);
         session->installed_here = false;
     }
-    if (session->lvgl_locked) {
-        (void)display_panel_lvgl_unlock();
-        session->lvgl_locked = false;
-    }
 }
 
 static esp_err_t echoear_i2c_debug_session_valid(const echoear_i2c_debug_session_t *session)
@@ -85,7 +62,7 @@ static esp_err_t echoear_i2c_debug_session_valid(const echoear_i2c_debug_session
     if (session == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    if ((session->port != ECHOEAR_TOUCH_I2C_NUM) && (session->port != ECHOEAR_DETECT_I2C_NUM)) {
+    if (session->port != ECHOEAR_TOUCH_I2C_NUM) {
         return ESP_ERR_INVALID_STATE;
     }
     return ESP_OK;

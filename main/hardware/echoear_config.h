@@ -41,13 +41,14 @@
 #define ECHOEAR_PA_PIN_V1_0                 GPIO_NUM_4
 #define ECHOEAR_PA_PIN_V1_2                 GPIO_NUM_15
 
-// I2C Audio Codec
-#define ECHOEAR_AUDIO_I2C_NUM               I2C_NUM_0
+// Shared I2C bus (touch + BMI270 + audio/charge IC diagnostics)
+#define ECHOEAR_SHARED_I2C_NUM              I2C_NUM_0
+#define ECHOEAR_AUDIO_I2C_NUM               ECHOEAR_SHARED_I2C_NUM
 #define ECHOEAR_AUDIO_I2C_SDA               GPIO_NUM_2
 #define ECHOEAR_AUDIO_I2C_SCL               GPIO_NUM_1
 #define ECHOEAR_AUDIO_I2C_FREQ_HZ           100000
-// Use a temporary bus instance for board-version probing to avoid runtime conflicts.
-#define ECHOEAR_DETECT_I2C_NUM              I2C_NUM_1
+// Legacy alias kept for existing debug/detect helpers; it is the same shared bus.
+#define ECHOEAR_DETECT_I2C_NUM              ECHOEAR_SHARED_I2C_NUM
 
 // Audio Codec I2C Addresses
 #define ECHOEAR_ES8311_ADDR                 0x18    // DAC (Speaker)
@@ -94,7 +95,7 @@
 // Touch System Configuration (CST816S)
 // =============================================================================
 
-#define ECHOEAR_TOUCH_I2C_NUM               I2C_NUM_0   // Shared with audio
+#define ECHOEAR_TOUCH_I2C_NUM               ECHOEAR_SHARED_I2C_NUM
 #define ECHOEAR_TOUCH_I2C_ADDR              0x15
 #define ECHOEAR_TOUCH_INT                   GPIO_NUM_10
 #define ECHOEAR_TOUCH_INT_ACTIVE_LEVEL      0

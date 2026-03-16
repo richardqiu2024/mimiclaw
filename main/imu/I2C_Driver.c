@@ -42,11 +42,6 @@ esp_err_t I2C_Init(void)
         ESP_LOGI(I2C_TAG, "Reusing shared I2C bus on I2C%d", I2C_MASTER_NUM);
         return ESP_OK;
     }
-    if ((err == ESP_FAIL) && display_panel_is_ready()) {
-        s_i2c_ready = true;
-        ESP_LOGI(I2C_TAG, "Reusing already-installed shared I2C bus on I2C%d", I2C_MASTER_NUM);
-        return ESP_OK;
-    }
     if (err != ESP_OK) {
         ESP_LOGW(I2C_TAG, "I2C init failed: %s", esp_err_to_name(err));
         return err;

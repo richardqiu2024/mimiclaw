@@ -3,6 +3,7 @@ idf_component_register(
         "mimi.c"
         "buttons/multi_button.c"
         "buttons/button_driver.c"
+        "imu/I2C_Driver.c"
         "imu/imu_manager.c"
         "imu/bmi270_driver.c"
         "imu/bmi270_sensor_api/bmi2.c"

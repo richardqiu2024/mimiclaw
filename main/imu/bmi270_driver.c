@@ -139,7 +139,6 @@ static BMI2_INTF_RETURN_TYPE bmi270_i2c_write(uint8_t reg_addr, const uint8_t *r
                                               uint32_t len, void *intf_ptr)
 {
     uint8_t address = s_bmi_address;
-    uint8_t buffer[BMI2_MAX_LEN + 1];
     esp_err_t err;
 
     if (((reg_data == NULL) && (len > 0)) || (intf_ptr == NULL) || (len > BMI2_MAX_LEN)) {
@@ -147,17 +146,12 @@ static BMI2_INTF_RETURN_TYPE bmi270_i2c_write(uint8_t reg_addr, const uint8_t *r
     }
 
     address = *(uint8_t *)intf_ptr;
-    buffer[0] = reg_addr;
-    if (len > 0) {
-        memcpy(&buffer[1], reg_data, len);
-    }
 
     if (!lock_driver(portMAX_DELAY)) {
         return BMI2_E_COM_FAIL;
     }
 
-    err = i2c_master_write_to_device(I2C_MASTER_NUM, address, buffer, len + 1,
-                                     I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+    err = I2C_Write(address, reg_addr, reg_data, len);
     unlock_driver();
 
     return (err == ESP_OK) ? BMI2_OK : BMI2_E_COM_FAIL;

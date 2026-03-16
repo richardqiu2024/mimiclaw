@@ -14,7 +14,6 @@ extern "C" {
 typedef struct {
     i2c_port_t port;
     bool installed_here;
-    bool lvgl_locked;
 } echoear_i2c_debug_session_t;
 
 esp_err_t echoear_i2c_debug_open(echoear_i2c_debug_session_t *session);

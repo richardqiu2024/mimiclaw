@@ -91,33 +91,118 @@ static size_t url_encode(const char *src, char *dst, size_t dst_size)
 
 /* ── Format results as readable text ──────────────────────────── */
 
+static bool append_formatted_result(char *output, size_t output_size, size_t *offset, int index,
+                                    const char *title, const char *url, const char *desc)
+{
+    int written;
+
+    if ((output == NULL) || (offset == NULL) || (*offset >= output_size)) {
+        return false;
+    }
+
+    written = snprintf(output + *offset, output_size - *offset,
+                       "%d. %s\n   %s\n   %s\n\n",
+                       index,
+                       (title && title[0]) ? title : "(no title)",
+                       (url && url[0]) ? url : "",
+                       (desc && desc[0]) ? desc : "");
+    if (written <= 0) {
+        return false;
+    }
+
+    *offset += (size_t)written;
+    if (*offset >= output_size) {
+        output[output_size - 1] = '\0';
+        return false;
+    }
+    return true;
+}
+
 static void format_results(cJSON *root, char *output, size_t output_size)
 {
     cJSON *results = cJSON_GetObjectItem(root, "results");
-    if (!results || !cJSON_IsArray(results) || cJSON_GetArraySize(results) == 0) {
-        snprintf(output, output_size, "No web results found.");
-        return;
-    }
-
+    cJSON *answers = cJSON_GetObjectItem(root, "answers");
+    cJSON *infoboxes = cJSON_GetObjectItem(root, "infoboxes");
     size_t off = 0;
     int idx = 0;
     cJSON *item;
-    cJSON_ArrayForEach(item, results) {
-        if (idx >= SEARCH_RESULT_COUNT) break;
 
-        cJSON *title = cJSON_GetObjectItem(item, "title");
-        cJSON *url = cJSON_GetObjectItem(item, "url");
-        cJSON *desc = cJSON_GetObjectItem(item, "content");
+    output[0] = '\0';
 
-        off += snprintf(output + off, output_size - off,
-            "%d. %s\n   %s\n   %s\n\n",
-            idx + 1,
-            (title && cJSON_IsString(title)) ? title->valuestring : "(no title)",
-            (url && cJSON_IsString(url)) ? url->valuestring : "",
-            (desc && cJSON_IsString(desc)) ? desc->valuestring : "");
+    if (answers && cJSON_IsArray(answers)) {
+        cJSON_ArrayForEach(item, answers) {
+            if (idx >= SEARCH_RESULT_COUNT) break;
+            if (!cJSON_IsString(item) || item->valuestring[0] == '\0') continue;
 
-        if (off >= output_size - 1) break;
-        idx++;
+            if (!append_formatted_result(output, output_size, &off, idx + 1,
+                                         "Direct answer", "", item->valuestring)) {
+                break;
+            }
+            idx++;
+        }
+    }
+
+    if (results && cJSON_IsArray(results)) {
+        cJSON_ArrayForEach(item, results) {
+            cJSON *title;
+            cJSON *url;
+            cJSON *desc;
+
+            if (idx >= SEARCH_RESULT_COUNT) break;
+
+            title = cJSON_GetObjectItem(item, "title");
+            url = cJSON_GetObjectItem(item, "url");
+            desc = cJSON_GetObjectItem(item, "content");
+
+            if (!append_formatted_result(
+                    output, output_size, &off, idx + 1,
+                    (title && cJSON_IsString(title)) ? title->valuestring : NULL,
+                    (url && cJSON_IsString(url)) ? url->valuestring : NULL,
+                    (desc && cJSON_IsString(desc)) ? desc->valuestring : NULL)) {
+                break;
+            }
+            idx++;
+        }
+    }
+
+    if (infoboxes && cJSON_IsArray(infoboxes)) {
+        cJSON_ArrayForEach(item, infoboxes) {
+            cJSON *title;
+            cJSON *label;
+            cJSON *url;
+            cJSON *id;
+            cJSON *desc;
+            cJSON *urls;
+            cJSON *first_url;
+            cJSON *nested_url;
+
+            if (idx >= SEARCH_RESULT_COUNT) break;
+
+            title = cJSON_GetObjectItem(item, "title");
+            label = cJSON_GetObjectItem(item, "infobox");
+            url = cJSON_GetObjectItem(item, "url");
+            id = cJSON_GetObjectItem(item, "id");
+            desc = cJSON_GetObjectItem(item, "content");
+            urls = cJSON_GetObjectItem(item, "urls");
+            first_url = (urls && cJSON_IsArray(urls)) ? cJSON_GetArrayItem(urls, 0) : NULL;
+            nested_url = first_url ? cJSON_GetObjectItem(first_url, "url") : NULL;
+
+            if (!append_formatted_result(
+                    output, output_size, &off, idx + 1,
+                    (title && cJSON_IsString(title) && title->valuestring[0]) ? title->valuestring :
+                    ((label && cJSON_IsString(label)) ? label->valuestring : NULL),
+                    (url && cJSON_IsString(url) && url->valuestring[0]) ? url->valuestring :
+                    ((id && cJSON_IsString(id) && id->valuestring[0]) ? id->valuestring :
+                    ((nested_url && cJSON_IsString(nested_url)) ? nested_url->valuestring : NULL)),
+                    (desc && cJSON_IsString(desc)) ? desc->valuestring : NULL)) {
+                break;
+            }
+            idx++;
+        }
+    }
+
+    if (idx == 0) {
+        snprintf(output, output_size, "No web results found.");
     }
 }
 

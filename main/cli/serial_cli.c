@@ -52,7 +52,7 @@ static serial_cli_output_cb_t s_output_cb = NULL;
 static void *s_output_ctx = NULL;
 
 #define TOOL_DEBUG_OUTPUT_SIZE ((32 * 1024) + 1)
-#define CLI_I2C_SCAN_TIMEOUT_MS 20
+#define CLI_I2C_SCAN_TIMEOUT_MS 50
 
 static void cli_write_raw(const char *data, size_t len)
 {
@@ -978,6 +978,8 @@ static const char *cli_i2c_known_device_name(uint8_t address)
         return "ES8311 codec";
     case ECHOEAR_ES7210_ADDR:
         return "ES7210 mic ADC";
+    case ECHOEAR_CHARGE_IC_ADDR:
+        return "BQ27220/charge IC";
     case BMI270_DRIVER_I2C_ADDR_LOW:
     case BMI270_DRIVER_I2C_ADDR_HIGH:
         return "BMI270 candidate";

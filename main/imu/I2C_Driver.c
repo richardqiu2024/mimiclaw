@@ -1,5 +1,6 @@
 #include "I2C_Driver.h"
 #include "display/display_panel.h"
+#include "freertos/semphr.h"
 
 
 #define I2C_TRANS_BUF_MINIMUM_SIZE     (sizeof(i2c_cmd_desc_t) + \
@@ -9,6 +10,17 @@
                                                                      * stop */
 static const char *I2C_TAG = "I2C";
 static bool s_i2c_ready = false;
+static SemaphoreHandle_t s_i2c_bus_mutex = NULL;
+
+static esp_err_t ensure_i2c_bus_mutex(void)
+{
+    if (s_i2c_bus_mutex != NULL) {
+        return ESP_OK;
+    }
+
+    s_i2c_bus_mutex = xSemaphoreCreateRecursiveMutex();
+    return (s_i2c_bus_mutex != NULL) ? ESP_OK : ESP_ERR_NO_MEM;
+}
 /**
  * @brief i2c master initialization
  */
@@ -26,6 +38,13 @@ static esp_err_t i2c_master_init(void)
 }
 esp_err_t I2C_Init(void)
 {
+    esp_err_t mutex_err = ensure_i2c_bus_mutex();
+
+    if (mutex_err != ESP_OK) {
+        ESP_LOGW(I2C_TAG, "I2C mutex init failed: %s", esp_err_to_name(mutex_err));
+        return mutex_err;
+    }
+
     if (s_i2c_ready) {
         return ESP_OK;
     }
@@ -52,6 +71,27 @@ esp_err_t I2C_Init(void)
     return ESP_OK;
 }
 
+bool I2C_LockBus(int timeout_ms)
+{
+    TickType_t timeout_ticks;
+
+    if (ensure_i2c_bus_mutex() != ESP_OK) {
+        return false;
+    }
+
+    timeout_ticks = (timeout_ms < 0) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
+    return xSemaphoreTakeRecursive(s_i2c_bus_mutex, timeout_ticks) == pdTRUE;
+}
+
+bool I2C_UnlockBus(void)
+{
+    if (s_i2c_bus_mutex == NULL) {
+        return false;
+    }
+
+    return xSemaphoreGiveRecursive(s_i2c_bus_mutex) == pdTRUE;
+}
+
 
 // Reg addr is 8 bit
 esp_err_t I2C_Write(uint8_t Driver_addr, uint8_t Reg_addr, const uint8_t *Reg_data, uint32_t Length)
@@ -63,8 +103,15 @@ esp_err_t I2C_Write(uint8_t Driver_addr, uint8_t Reg_addr, const uint8_t *Reg_da
     if ((Length > 0) && (Reg_data == NULL)) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (!I2C_LockBus(I2C_MASTER_TIMEOUT_MS)) {
+        return ESP_ERR_TIMEOUT;
+    }
     if (Length == 0) {
-        return i2c_master_write_to_device(I2C_MASTER_NUM, Driver_addr, &Reg_addr, 1, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+        err = i2c_master_write_to_device(
+            I2C_MASTER_NUM, Driver_addr, &Reg_addr, 1, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS
+        );
+        I2C_UnlockBus();
+        return err;
     }
 
     uint8_t buf[Length+1];
@@ -72,7 +119,11 @@ esp_err_t I2C_Write(uint8_t Driver_addr, uint8_t Reg_addr, const uint8_t *Reg_da
     buf[0] = Reg_addr;
     // Copy Reg_data to buf starting at buf[1]
     memcpy(&buf[1], Reg_data, Length);
-    return i2c_master_write_to_device(I2C_MASTER_NUM, Driver_addr, buf, Length+1, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+    err = i2c_master_write_to_device(
+        I2C_MASTER_NUM, Driver_addr, buf, Length+1, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS
+    );
+    I2C_UnlockBus();
+    return err;
 }
 
 
@@ -89,6 +140,14 @@ esp_err_t I2C_Read(uint8_t Driver_addr, uint8_t Reg_addr, uint8_t *Reg_data, uin
     if (Length == 0) {
         return ESP_OK;
     }
+    if (!I2C_LockBus(I2C_MASTER_TIMEOUT_MS)) {
+        return ESP_ERR_TIMEOUT;
+    }
 
-    return i2c_master_write_read_device(I2C_MASTER_NUM, Driver_addr, &Reg_addr, 1, Reg_data, Length, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+    err = i2c_master_write_read_device(
+        I2C_MASTER_NUM, Driver_addr, &Reg_addr, 1, Reg_data, Length,
+        I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS
+    );
+    I2C_UnlockBus();
+    return err;
 }

@@ -5,6 +5,8 @@ idf_component_register(
         "buttons/button_driver.c"
         "imu/imu_manager.c"
         "imu/bmi270_driver.c"
+        "imu/bmi270_sensor_api/bmi2.c"
+        "imu/bmi270_sensor_api/bmi270.c"
         "bus/message_bus.c"
         "wifi/wifi_manager.c"
         "telegram/telegram_bot.c"

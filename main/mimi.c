@@ -134,7 +134,6 @@ void app_main(void)
         display_panel_show_boot();
     }
 
-    // Initialize IMU (BMI270 uses shared I2C bus, no conflict with touch)
     imu_manager_init();
     imu_manager_set_shake_callback(NULL);
 

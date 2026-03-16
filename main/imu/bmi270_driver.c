@@ -1,207 +1,354 @@
 #include "imu/bmi270_driver.h"
 
-#include "hardware/echoear_i2c_debug.h"
+#include "imu/I2C_Driver.h"
+#include "imu/bmi270_sensor_api/bmi2.h"
+#include "imu/bmi270_sensor_api/bmi270.h"
+
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "rom/ets_sys.h"
 
 #include <stdio.h>
 #include <string.h>
 
-// Include BMI270 config file
-#include "../../managed_components/espressif__bmi270_sensor/firmware/bmi270_image.h"
-
 static const char *TAG = "bmi270";
-static uint8_t s_bmi270_address = 0;
-static bool s_bmi270_initialized = false;
 
-#define BMI270_CONFIG_FILE_SIZE 8192
+static SemaphoreHandle_t s_driver_mutex = NULL;
+static struct bmi2_dev s_bmi_dev;
+static bool s_driver_initialized = false;
+static uint8_t s_bmi_address = BMI270_DRIVER_I2C_ADDR_LOW;
+static esp_err_t s_last_init_err = ESP_ERR_INVALID_STATE;
 
-static esp_err_t bmi270_write_config_file(echoear_i2c_debug_session_t *session)
+static esp_err_t ensure_driver_mutex(void)
 {
-    esp_err_t err;
-    uint8_t status;
-
-    ESP_LOGI(TAG, "Uploading config file (8KB)...");
-
-    // Disable advanced power save
-    err = echoear_i2c_debug_write_reg8(session, s_bmi270_address, BMI270_REG_PWR_CONF, 0x00, 100);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Disable power save failed");
-        return err;
-    }
-    vTaskDelay(pdMS_TO_TICKS(1));
-
-    // Prepare for config load
-    err = echoear_i2c_debug_write_reg8(session, s_bmi270_address, BMI270_REG_INIT_CTRL, 0x00, 100);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Init ctrl failed");
-        return err;
-    }
-
-    // Write config file in 16-byte bursts
-    // Address format: 12-bit addressing (4 bits in addr[0], 8 bits in addr[1])
-    for (uint16_t byte_idx = 0; byte_idx < BMI270_CONFIG_FILE_SIZE; byte_idx += 16) {
-        // Calculate word address (byte_address / 2)
-        uint16_t word_addr = byte_idx / 2;
-
-        // Set address using 12-bit format: addr[0] = lower 4 bits, addr[1] = upper 8 bits
-        uint8_t addr_low = (uint8_t)(word_addr & 0x0F);
-        uint8_t addr_high = (uint8_t)(word_addr >> 4);
-
-        err = echoear_i2c_debug_write_reg8(session, s_bmi270_address, BMI270_REG_INIT_ADDR_0, addr_low, 100);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Set addr0 failed at %d", byte_idx);
-            return err;
-        }
-
-        err = echoear_i2c_debug_write_reg8(session, s_bmi270_address, BMI270_REG_INIT_ADDR_1, addr_high, 100);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Set addr1 failed at %d", byte_idx);
-            return err;
-        }
-
-        // Write 16 bytes of data
-        for (uint8_t i = 0; i < 16 && (byte_idx + i) < BMI270_CONFIG_FILE_SIZE; i++) {
-            err = echoear_i2c_debug_write_reg8(session, s_bmi270_address, BMI270_REG_INIT_DATA,
-                                               bmi270_config_file[byte_idx + i], 100);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Write data failed at %d", byte_idx + i);
-                return err;
-            }
-        }
-    }
-
-    ESP_LOGI(TAG, "Config file uploaded");
-
-    // Complete config load
-    err = echoear_i2c_debug_write_reg8(session, s_bmi270_address, BMI270_REG_INIT_CTRL, 0x01, 100);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Complete init failed");
-        return err;
-    }
-
-    // Wait for initialization
-    vTaskDelay(pdMS_TO_TICKS(150));
-
-    // Check internal status - MUST READ TWICE!
-    // First read triggers the chip to update the status bit
-    err = echoear_i2c_debug_read_reg8(session, s_bmi270_address, BMI270_REG_INTERNAL_STATUS, &status, 100);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Read status (1st) failed");
-        return err;
-    }
-
-    // Second read gets the actual status
-    err = echoear_i2c_debug_read_reg8(session, s_bmi270_address, BMI270_REG_INTERNAL_STATUS, &status, 100);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Read status (2nd) failed");
-        return err;
-    }
-
-    ESP_LOGI(TAG, "Internal status: 0x%02x (init_ok=%d, msg_ok=%d)",
-             status, status & 0x01, (status >> 1) & 0x01);
-
-    if ((status & 0x01) != 0x01) {
-        ESP_LOGE(TAG, "Config load failed, status=0x%02x", status);
-        return ESP_FAIL;
-    }
-
-    ESP_LOGI(TAG, "Config loaded successfully");
-    return ESP_OK;
-}
-
-esp_err_t bmi270_init(void)
-{
-    bmi270_status_t status;
-    echoear_i2c_debug_session_t session = {0};
-    esp_err_t err;
-    uint8_t data;
-
-    if (s_bmi270_initialized) {
+    if (s_driver_mutex != NULL) {
         return ESP_OK;
     }
 
-    err = bmi270_get_status(&status);
-    if (err != ESP_OK || !status.chip_id_matches) {
-        ESP_LOGE(TAG, "BMI270 not found or chip ID mismatch");
+    s_driver_mutex = xSemaphoreCreateRecursiveMutex();
+    return (s_driver_mutex != NULL) ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+static bool lock_driver(TickType_t timeout_ticks)
+{
+    return (s_driver_mutex != NULL) &&
+           (xSemaphoreTakeRecursive(s_driver_mutex, timeout_ticks) == pdTRUE);
+}
+
+static void unlock_driver(void)
+{
+    if (s_driver_mutex != NULL) {
+        xSemaphoreGiveRecursive(s_driver_mutex);
+    }
+}
+
+static bool bmi2_result_failed(int8_t rslt)
+{
+    return rslt < BMI2_OK;
+}
+
+static esp_err_t bmi2_result_to_esp_err(int8_t rslt)
+{
+    switch (rslt) {
+    case BMI2_OK:
+        return ESP_OK;
+    case BMI2_E_NULL_PTR:
+    case BMI2_E_INVALID_INPUT:
+        return ESP_ERR_INVALID_ARG;
+    case BMI2_E_DEV_NOT_FOUND:
+        return ESP_ERR_NOT_FOUND;
+    default:
+        return ESP_FAIL;
+    }
+}
+
+static esp_err_t probe_bmi270_address(uint8_t *address, uint8_t *chip_id,
+                                      esp_err_t *probe_err, esp_err_t *read_err)
+{
+    static const uint8_t addresses[] = {
+        BMI270_DRIVER_I2C_ADDR_LOW,
+        BMI270_DRIVER_I2C_ADDR_HIGH,
+    };
+    esp_err_t init_err = I2C_Init();
+
+    if (probe_err != NULL) {
+        *probe_err = init_err;
+    }
+    if (read_err != NULL) {
+        *read_err = ESP_OK;
+    }
+    if (init_err != ESP_OK) {
+        return init_err;
+    }
+
+    for (size_t index = 0; index < (sizeof(addresses) / sizeof(addresses[0])); ++index) {
+        uint8_t current_chip_id = 0;
+        esp_err_t err = I2C_Read(addresses[index], BMI270_DRIVER_REG_CHIP_ID, &current_chip_id, 1);
+        if (err != ESP_OK) {
+            if (probe_err != NULL) {
+                *probe_err = err;
+            }
+            if (read_err != NULL) {
+                *read_err = err;
+            }
+            continue;
+        }
+
+        if (address != NULL) {
+            *address = addresses[index];
+        }
+        if (chip_id != NULL) {
+            *chip_id = current_chip_id;
+        }
+        if (probe_err != NULL) {
+            *probe_err = ESP_OK;
+        }
+        if (read_err != NULL) {
+            *read_err = ESP_OK;
+        }
+
+        return (current_chip_id == BMI270_CHIP_ID) ? ESP_OK : ESP_FAIL;
+    }
+
+    return ESP_ERR_NOT_FOUND;
+}
+
+static BMI2_INTF_RETURN_TYPE bmi270_i2c_read(uint8_t reg_addr, uint8_t *reg_data,
+                                             uint32_t len, void *intf_ptr)
+{
+    uint8_t address = s_bmi_address;
+    esp_err_t err;
+
+    if (((reg_data == NULL) && (len > 0)) || (intf_ptr == NULL)) {
+        return BMI2_E_NULL_PTR;
+    }
+
+    address = *(uint8_t *)intf_ptr;
+    if (!lock_driver(portMAX_DELAY)) {
+        return BMI2_E_COM_FAIL;
+    }
+
+    err = I2C_Read(address, reg_addr, reg_data, len);
+    unlock_driver();
+
+    return (err == ESP_OK) ? BMI2_OK : BMI2_E_COM_FAIL;
+}
+
+static BMI2_INTF_RETURN_TYPE bmi270_i2c_write(uint8_t reg_addr, const uint8_t *reg_data,
+                                              uint32_t len, void *intf_ptr)
+{
+    uint8_t address = s_bmi_address;
+    uint8_t buffer[BMI2_MAX_LEN + 1];
+    esp_err_t err;
+
+    if (((reg_data == NULL) && (len > 0)) || (intf_ptr == NULL) || (len > BMI2_MAX_LEN)) {
+        return BMI2_E_INVALID_INPUT;
+    }
+
+    address = *(uint8_t *)intf_ptr;
+    buffer[0] = reg_addr;
+    if (len > 0) {
+        memcpy(&buffer[1], reg_data, len);
+    }
+
+    if (!lock_driver(portMAX_DELAY)) {
+        return BMI2_E_COM_FAIL;
+    }
+
+    err = i2c_master_write_to_device(I2C_MASTER_NUM, address, buffer, len + 1,
+                                     I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+    unlock_driver();
+
+    return (err == ESP_OK) ? BMI2_OK : BMI2_E_COM_FAIL;
+}
+
+static void bmi270_delay_us(uint32_t period, void *intf_ptr)
+{
+    (void)intf_ptr;
+    ets_delay_us(period);
+}
+
+static int8_t bmi270_configure_accel(struct bmi2_dev *device)
+{
+    struct bmi2_sens_config config = {
+        .type = BMI2_ACCEL,
+    };
+    int8_t rslt = bmi2_get_sensor_config(&config, 1, device);
+
+    if (bmi2_result_failed(rslt)) {
+        return rslt;
+    }
+
+    config.cfg.acc.odr = BMI2_ACC_ODR_200HZ;
+    config.cfg.acc.range = BMI2_ACC_RANGE_2G;
+    config.cfg.acc.bwp = BMI2_ACC_NORMAL_AVG4;
+    config.cfg.acc.filter_perf = BMI2_PERF_OPT_MODE;
+
+    return bmi2_set_sensor_config(&config, 1, device);
+}
+
+static int8_t bmi270_configure_gyro(struct bmi2_dev *device)
+{
+    struct bmi2_sens_config config = {
+        .type = BMI2_GYRO,
+    };
+    int8_t rslt = bmi2_get_sensor_config(&config, 1, device);
+
+    if (bmi2_result_failed(rslt)) {
+        return rslt;
+    }
+
+    config.cfg.gyr.odr = BMI2_GYR_ODR_100HZ;
+    config.cfg.gyr.range = BMI2_GYR_RANGE_2000;
+    config.cfg.gyr.bwp = BMI2_GYR_NORMAL_MODE;
+    config.cfg.gyr.noise_perf = BMI2_POWER_OPT_MODE;
+    config.cfg.gyr.filter_perf = BMI2_PERF_OPT_MODE;
+
+    return bmi2_set_sensor_config(&config, 1, device);
+}
+
+static float lsb_to_g(int16_t value, float range_g, uint8_t bit_width)
+{
+    const float half_scale = (float)(1U << (bit_width - 1));
+    return (range_g / half_scale) * (float)value;
+}
+
+static float lsb_to_dps(int16_t value, float range_dps, uint8_t bit_width)
+{
+    const float half_scale = (float)(1U << (bit_width - 1));
+    return (range_dps / half_scale) * (float)value;
+}
+
+esp_err_t bmi270_driver_init(void)
+{
+    esp_err_t err = ensure_driver_mutex();
+    int8_t rslt;
+
+    if (err != ESP_OK) {
+        s_last_init_err = err;
         return err;
     }
 
-    s_bmi270_address = status.address;
-    ESP_LOGI(TAG, "BMI270 detected at 0x%02x", s_bmi270_address);
+    if (!lock_driver(portMAX_DELAY)) {
+        s_last_init_err = ESP_ERR_TIMEOUT;
+        return ESP_ERR_TIMEOUT;
+    }
 
-    err = echoear_i2c_debug_open(&session);
+    if (s_driver_initialized) {
+        unlock_driver();
+        return ESP_OK;
+    }
+
+    err = probe_bmi270_address(&s_bmi_address, NULL, NULL, NULL);
+    if (err != ESP_OK) {
+        s_last_init_err = err;
+        unlock_driver();
+        return err;
+    }
+
+    memset(&s_bmi_dev, 0, sizeof(s_bmi_dev));
+    s_bmi_dev.intf = BMI2_I2C_INTF;
+    s_bmi_dev.read = bmi270_i2c_read;
+    s_bmi_dev.write = bmi270_i2c_write;
+    s_bmi_dev.delay_us = bmi270_delay_us;
+    s_bmi_dev.intf_ptr = &s_bmi_address;
+    s_bmi_dev.read_write_len = BMI2_MAX_LEN;
+
+    rslt = bmi270_init(&s_bmi_dev);
+    if (bmi2_result_failed(rslt)) {
+        s_last_init_err = bmi2_result_to_esp_err(rslt);
+        unlock_driver();
+        ESP_LOGE(TAG, "BMI270 init failed: %d", rslt);
+        return s_last_init_err;
+    }
+
+    rslt = bmi270_configure_accel(&s_bmi_dev);
+    if (bmi2_result_failed(rslt)) {
+        s_last_init_err = bmi2_result_to_esp_err(rslt);
+        unlock_driver();
+        ESP_LOGE(TAG, "BMI270 accel config failed: %d", rslt);
+        return s_last_init_err;
+    }
+
+    rslt = bmi270_configure_gyro(&s_bmi_dev);
+    if (bmi2_result_failed(rslt)) {
+        s_last_init_err = bmi2_result_to_esp_err(rslt);
+        unlock_driver();
+        ESP_LOGE(TAG, "BMI270 gyro config failed: %d", rslt);
+        return s_last_init_err;
+    }
+
+    {
+        uint8_t sensor_list[] = {BMI2_ACCEL, BMI2_GYRO};
+
+        rslt = bmi2_sensor_enable(sensor_list, (uint8_t)(sizeof(sensor_list) / sizeof(sensor_list[0])), &s_bmi_dev);
+        if (bmi2_result_failed(rslt)) {
+            s_last_init_err = bmi2_result_to_esp_err(rslt);
+            unlock_driver();
+            ESP_LOGE(TAG, "BMI270 sensor enable failed: %d", rslt);
+            return s_last_init_err;
+        }
+    }
+
+    s_driver_initialized = true;
+    s_last_init_err = ESP_OK;
+    unlock_driver();
+
+    ESP_LOGI(TAG, "BMI270 ready on shared touch I2C bus at 0x%02x", s_bmi_address);
+    return ESP_OK;
+}
+
+bool bmi270_driver_is_ready(void)
+{
+    return s_driver_initialized;
+}
+
+esp_err_t bmi270_read_sample(bmi270_sample_t *sample)
+{
+    struct bmi2_sens_data sensor_data;
+    int8_t rslt;
+    esp_err_t err;
+
+    if (sample == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(sample, 0, sizeof(*sample));
+
+    err = bmi270_driver_init();
     if (err != ESP_OK) {
         return err;
     }
 
-    // Soft reset
-    err = echoear_i2c_debug_write_reg8(&session, s_bmi270_address, BMI270_REG_CMD, BMI270_CMD_SOFT_RESET, 100);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Soft reset failed");
-        echoear_i2c_debug_close(&session);
-        return err;
-    }
-    echoear_i2c_debug_close(&session);
-    vTaskDelay(pdMS_TO_TICKS(200));
-
-    // Reopen session and upload config file
-    err = echoear_i2c_debug_open(&session);
-    if (err != ESP_OK) {
-        return err;
+    if (!lock_driver(portMAX_DELAY)) {
+        return ESP_ERR_TIMEOUT;
     }
 
-    err = bmi270_write_config_file(&session);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Config upload failed");
-        echoear_i2c_debug_close(&session);
-        return err;
+    memset(&sensor_data, 0, sizeof(sensor_data));
+    rslt = bmi2_get_sensor_data(&sensor_data, &s_bmi_dev);
+    unlock_driver();
+
+    if (bmi2_result_failed(rslt)) {
+        return bmi2_result_to_esp_err(rslt);
     }
 
-    // Enable accelerometer only
-    err = echoear_i2c_debug_write_reg8(&session, s_bmi270_address, BMI270_REG_PWR_CTRL, 0x04, 100);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Enable accel failed");
-        echoear_i2c_debug_close(&session);
-        return err;
-    }
-    vTaskDelay(pdMS_TO_TICKS(50));
+    sample->accel_data_ready = ((sensor_data.status & BMI2_DRDY_ACC) != 0);
+    sample->gyro_data_ready = ((sensor_data.status & BMI2_DRDY_GYR) != 0);
+    sample->accel_x_g = lsb_to_g(sensor_data.acc.x, 2.0f, s_bmi_dev.resolution);
+    sample->accel_y_g = lsb_to_g(sensor_data.acc.y, 2.0f, s_bmi_dev.resolution);
+    sample->accel_z_g = lsb_to_g(sensor_data.acc.z, 2.0f, s_bmi_dev.resolution);
+    sample->gyro_x_dps = lsb_to_dps(sensor_data.gyr.x, 2000.0f, s_bmi_dev.resolution);
+    sample->gyro_y_dps = lsb_to_dps(sensor_data.gyr.y, 2000.0f, s_bmi_dev.resolution);
+    sample->gyro_z_dps = lsb_to_dps(sensor_data.gyr.z, 2000.0f, s_bmi_dev.resolution);
 
-    // Configure accelerometer
-    err = echoear_i2c_debug_write_reg8(&session, s_bmi270_address, BMI270_REG_ACC_CONF, 0xA8, 100);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Accel config failed");
-        echoear_i2c_debug_close(&session);
-        return err;
-    }
-
-    err = echoear_i2c_debug_write_reg8(&session, s_bmi270_address, BMI270_REG_ACC_RANGE, 0x01, 100);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Accel range failed");
-        echoear_i2c_debug_close(&session);
-        return err;
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(10));
-
-    // Check status
-    err = echoear_i2c_debug_read_reg8(&session, s_bmi270_address, BMI270_REG_STATUS, &data, 100);
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Final status: 0x%02x (drdy_acc=%d)", data, (data >> 7) & 1);
-    }
-
-    echoear_i2c_debug_close(&session);
-    s_bmi270_initialized = true;
-    ESP_LOGI(TAG, "BMI270 initialized successfully");
     return ESP_OK;
 }
 
 esp_err_t bmi270_get_status(bmi270_status_t *status)
 {
-    static const uint8_t addresses[] = {BMI270_I2C_ADDR_LOW, BMI270_I2C_ADDR_HIGH};
-    echoear_i2c_debug_session_t session = {0};
-    esp_err_t err;
+    esp_err_t mutex_err = ensure_driver_mutex();
+    esp_err_t probe_result;
 
     if (status == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -210,120 +357,32 @@ esp_err_t bmi270_get_status(bmi270_status_t *status)
     memset(status, 0, sizeof(*status));
     status->probe_err = ESP_ERR_NOT_FOUND;
     status->read_err = ESP_OK;
+    status->init_err = s_last_init_err;
+    status->driver_initialized = s_driver_initialized;
 
-    err = echoear_i2c_debug_open(&session);
-    if (err != ESP_OK) {
-        status->probe_err = err;
-        return err;
+    if (mutex_err != ESP_OK) {
+        status->probe_err = mutex_err;
+        status->read_err = mutex_err;
+        status->init_err = mutex_err;
+        return mutex_err;
     }
 
-    for (size_t index = 0; index < (sizeof(addresses) / sizeof(addresses[0])); ++index) {
-        uint8_t address = addresses[index];
-
-        err = echoear_i2c_debug_probe(&session, address, 100);
-        if (err != ESP_OK) {
-            status->probe_err = err;
-            continue;
-        }
-
-        status->present = true;
-        status->address = address;
-        status->probe_err = ESP_OK;
-
-        err = echoear_i2c_debug_read_reg8(&session, address, BMI270_REG_CHIP_ID, &status->chip_id, 100);
-        if (err != ESP_OK) {
-            status->read_err = err;
-            echoear_i2c_debug_close(&session);
-            return err;
-        }
-
-        status->chip_id_valid = true;
-        status->chip_id_matches = (status->chip_id == BMI270_CHIP_ID);
-        echoear_i2c_debug_close(&session);
-        return status->chip_id_matches ? ESP_OK : ESP_FAIL;
+    if (!lock_driver(portMAX_DELAY)) {
+        status->probe_err = ESP_ERR_TIMEOUT;
+        status->read_err = ESP_ERR_TIMEOUT;
+        return ESP_ERR_TIMEOUT;
     }
 
-    echoear_i2c_debug_close(&session);
-    return ESP_ERR_NOT_FOUND;
-}
+    probe_result = probe_bmi270_address(&status->address, &status->chip_id,
+                                        &status->probe_err, &status->read_err);
+    status->present = (status->probe_err == ESP_OK);
+    status->chip_id_valid = status->present;
+    status->chip_id_matches = status->chip_id_valid && (status->chip_id == BMI270_CHIP_ID);
+    status->driver_initialized = s_driver_initialized;
+    status->init_err = s_last_init_err;
 
-esp_err_t bmi270_read_accel(bmi270_accel_t *accel)
-{
-    echoear_i2c_debug_session_t session = {0};
-    uint8_t data[6];
-    esp_err_t err;
-
-    if (accel == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    if (!s_bmi270_initialized || s_bmi270_address == 0) {
-        ESP_LOGE(TAG, "BMI270 not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    err = echoear_i2c_debug_open(&session);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to open I2C session: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    err = echoear_i2c_debug_read_regs(&session, s_bmi270_address, BMI270_REG_ACC_X_LSB, data, 6, 100);
-    echoear_i2c_debug_close(&session);
-
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to read accel data: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    int16_t raw_x = (int16_t)((data[1] << 8) | data[0]);
-    int16_t raw_y = (int16_t)((data[3] << 8) | data[2]);
-    int16_t raw_z = (int16_t)((data[5] << 8) | data[4]);
-
-    // Convert to g (±4g range, 16-bit resolution)
-    accel->x = raw_x / 8192.0f;
-    accel->y = raw_y / 8192.0f;
-    accel->z = raw_z / 8192.0f;
-
-    return ESP_OK;
-}
-
-esp_err_t bmi270_read_gyro(bmi270_gyro_t *gyro)
-{
-    echoear_i2c_debug_session_t session = {0};
-    uint8_t data[6];
-    esp_err_t err;
-
-    if (gyro == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    if (!s_bmi270_initialized || s_bmi270_address == 0) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    err = echoear_i2c_debug_open(&session);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err = echoear_i2c_debug_read_regs(&session, s_bmi270_address, BMI270_REG_GYR_X_LSB, data, 6, 100);
-    echoear_i2c_debug_close(&session);
-
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    int16_t raw_x = (int16_t)((data[1] << 8) | data[0]);
-    int16_t raw_y = (int16_t)((data[3] << 8) | data[2]);
-    int16_t raw_z = (int16_t)((data[5] << 8) | data[4]);
-
-    // Convert to dps (±2000dps range, 16-bit resolution)
-    gyro->x = raw_x / 16.384f;
-    gyro->y = raw_y / 16.384f;
-    gyro->z = raw_z / 16.384f;
-
-    return ESP_OK;
+    unlock_driver();
+    return probe_result;
 }
 
 esp_err_t bmi270_format_status(char *output, size_t output_size)
@@ -338,8 +397,8 @@ esp_err_t bmi270_format_status(char *output, size_t output_size)
     err = bmi270_get_status(&status);
     if (!status.present) {
         snprintf(output, output_size,
-                 "BMI270 not found on shared I2C bus; checked 0x%02x and 0x%02x.",
-                 BMI270_I2C_ADDR_LOW, BMI270_I2C_ADDR_HIGH);
+                 "BMI270 not found on shared touch I2C bus; checked 0x%02x and 0x%02x.",
+                 BMI270_DRIVER_I2C_ADDR_LOW, BMI270_DRIVER_I2C_ADDR_HIGH);
         return err;
     }
 
@@ -357,7 +416,26 @@ esp_err_t bmi270_format_status(char *output, size_t output_size)
         return err;
     }
 
-    snprintf(output, output_size, "BMI270 OK at 0x%02x, chip_id=0x%02x.",
-             status.address, status.chip_id);
-    return ESP_OK;
+    if (status.driver_initialized) {
+        snprintf(output, output_size,
+                 "BMI270 OK on shared touch I2C bus at 0x%02x, chip_id=0x%02x, driver ready.",
+                 status.address, status.chip_id);
+        return ESP_OK;
+    }
+
+    if (status.init_err == ESP_OK) {
+        snprintf(output, output_size,
+                 "BMI270 detected on shared touch I2C bus at 0x%02x, chip_id=0x%02x.",
+                 status.address, status.chip_id);
+    } else if (status.init_err == ESP_ERR_INVALID_STATE) {
+        snprintf(output, output_size,
+                 "BMI270 detected on shared touch I2C bus at 0x%02x, chip_id=0x%02x, driver not started yet.",
+                 status.address, status.chip_id);
+    } else {
+        snprintf(output, output_size,
+                 "BMI270 detected on shared touch I2C bus at 0x%02x, chip_id=0x%02x, last init failed: %s.",
+                 status.address, status.chip_id, esp_err_to_name(status.init_err));
+    }
+
+    return err;
 }

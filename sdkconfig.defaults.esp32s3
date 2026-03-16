@@ -49,3 +49,6 @@ CONFIG_BT_NIMBLE_GATT_SERVER=y
 
 # LVGL uses the project-local main/lv_conf.h
 # CONFIG_LV_CONF_SKIP is not set
+
+# ESP Display Panel: allow loading project custom board file
+# CONFIG_ESP_PANEL_BOARD_FILE_SKIP is not set

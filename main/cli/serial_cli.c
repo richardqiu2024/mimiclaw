@@ -52,6 +52,7 @@ static serial_cli_output_cb_t s_output_cb = NULL;
 static void *s_output_ctx = NULL;
 
 #define TOOL_DEBUG_OUTPUT_SIZE ((32 * 1024) + 1)
+#define CLI_I2C_DEBUG_PORT ECHOEAR_DETECT_I2C_NUM
 
 static void cli_write_raw(const char *data, size_t len)
 {
@@ -634,6 +635,7 @@ static int cmd_help(int argc, char **argv)
     printf("  heap_info\n");
     printf("  i2c_scan\n");
     printf("  bmi270_probe\n");
+    printf("  bmi270_read\n");
     printf("  es8311_probe\n");
     printf("  es7210_probe\n");
     printf("  sd_status\n");
@@ -976,8 +978,8 @@ static const char *cli_i2c_known_device_name(uint8_t address)
         return "ES8311 codec";
     case ECHOEAR_ES7210_ADDR:
         return "ES7210 mic ADC";
-    case BMI270_I2C_ADDR_LOW:
-    case BMI270_I2C_ADDR_HIGH:
+    case BMI270_DRIVER_I2C_ADDR_LOW:
+    case BMI270_DRIVER_I2C_ADDR_HIGH:
         return "BMI270 candidate";
     default:
         return NULL;
@@ -986,7 +988,7 @@ static const char *cli_i2c_known_device_name(uint8_t address)
 
 static int cmd_i2c_scan(int argc, char **argv)
 {
-    echoear_i2c_debug_session_t session = {0};
+    bool installed_here = false;
     int found = 0;
     esp_err_t err;
     (void)argc;
@@ -997,7 +999,7 @@ static int cmd_i2c_scan(int argc, char **argv)
         printf("Codec power enable failed: %s\n", esp_err_to_name(err));
     }
 
-    err = echoear_i2c_debug_open(&session);
+    err = echoear_i2c_debug_open(&installed_here);
     if (err != ESP_OK) {
         printf("I2C debug bus open failed: %s\n", esp_err_to_name(err));
         return 1;
@@ -1005,7 +1007,7 @@ static int cmd_i2c_scan(int argc, char **argv)
 
     printf(
         "Scanning shared I2C bus via I2C%d on SDA=GPIO%d SCL=GPIO%d\n",
-        session.port, (int)ECHOEAR_AUDIO_I2C_SDA, (int)ECHOEAR_AUDIO_I2C_SCL
+        CLI_I2C_DEBUG_PORT, (int)ECHOEAR_AUDIO_I2C_SDA, (int)ECHOEAR_AUDIO_I2C_SCL
     );
     printf("     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n");
     for (int row = 0; row < 128; row += 16) {
@@ -1017,7 +1019,7 @@ static int cmd_i2c_scan(int argc, char **argv)
                 continue;
             }
 
-            err = echoear_i2c_debug_probe(&session, address, 50);
+            err = echoear_i2c_debug_probe(address, 50);
             if (err == ESP_OK) {
                 printf("%02x ", address);
                 found++;
@@ -1036,7 +1038,7 @@ static int cmd_i2c_scan(int argc, char **argv)
         printf("Found %d device(s).\n", found);
         for (uint8_t address = 0x03; address <= 0x77; ++address) {
             const char *name;
-            err = echoear_i2c_debug_probe(&session, address, 50);
+            err = echoear_i2c_debug_probe(address, 50);
             if (err != ESP_OK) {
                 continue;
             }
@@ -1047,7 +1049,7 @@ static int cmd_i2c_scan(int argc, char **argv)
         }
     }
 
-    echoear_i2c_debug_close(&session);
+    echoear_i2c_debug_close(installed_here);
     return 0;
 }
 
@@ -1065,36 +1067,25 @@ static int cmd_bmi270_probe(int argc, char **argv)
 
 static int cmd_bmi270_read(int argc, char **argv)
 {
-    bmi270_accel_t accel;
-    bmi270_gyro_t gyro;
-    esp_err_t err_accel, err_gyro;
+    bmi270_sample_t sample;
+    esp_err_t err;
     (void)argc;
     (void)argv;
 
-    // Initialize BMI270 if not already done
-    esp_err_t init_err = bmi270_init();
-    if (init_err != ESP_OK) {
-        printf("BMI270 initialization failed: %s\n", esp_err_to_name(init_err));
+    err = bmi270_read_sample(&sample);
+    if (err != ESP_OK) {
+        printf("BMI270 read failed: %s\n", esp_err_to_name(err));
         return 1;
     }
 
-    printf("Reading BMI270 data...\n");
-
-    err_accel = bmi270_read_accel(&accel);
-    if (err_accel != ESP_OK) {
-        printf("Failed to read accelerometer: %s\n", esp_err_to_name(err_accel));
-    } else {
-        printf("Accelerometer (g): X=%.3f Y=%.3f Z=%.3f\n", accel.x, accel.y, accel.z);
-    }
-
-    err_gyro = bmi270_read_gyro(&gyro);
-    if (err_gyro != ESP_OK) {
-        printf("Failed to read gyroscope: %s\n", esp_err_to_name(err_gyro));
-    } else {
-        printf("Gyroscope (dps):   X=%.2f Y=%.2f Z=%.2f\n", gyro.x, gyro.y, gyro.z);
-    }
-
-    return (err_accel == ESP_OK && err_gyro == ESP_OK) ? 0 : 1;
+    printf(
+        "ACC[g] x=%0.3f y=%0.3f z=%0.3f (%s)  GYR[dps] x=%0.2f y=%0.2f z=%0.2f (%s)\n",
+        sample.accel_x_g, sample.accel_y_g, sample.accel_z_g,
+        sample.accel_data_ready ? "ready" : "stale",
+        sample.gyro_x_dps, sample.gyro_y_dps, sample.gyro_z_dps,
+        sample.gyro_data_ready ? "ready" : "stale"
+    );
+    return 0;
 }
 
 static int cmd_es8311_probe(int argc, char **argv)
@@ -2159,7 +2150,7 @@ esp_err_t serial_cli_init(void)
     /* bmi270_read */
     esp_console_cmd_t bmi270_read_cmd = {
         .command = "bmi270_read",
-        .help = "Read BMI270 accelerometer and gyroscope data",
+        .help = "Read one BMI270 accel/gyro sample from the shared touch I2C bus",
         .func = &cmd_bmi270_read,
     };
     esp_console_cmd_register(&bmi270_read_cmd);
